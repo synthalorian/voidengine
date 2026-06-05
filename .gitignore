@@ -1,0 +1,22 @@
+# Odin
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+*.lib
+*.a
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Game assets cache
+assets/.cache/
