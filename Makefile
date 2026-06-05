@@ -5,9 +5,6 @@ ODIN_ROOT := /tmp/odin-linux-amd64-nightly+2026-05-03
 ODIN := ODIN_ROOT=$(ODIN_ROOT) $(ODIN_ROOT)/odin
 ENGINE_COLLECTION := -collection:engine=src
 
-SDL2_CFLAGS := $(shell sdl2-config --cflags 2>/dev/null)
-SDL2_LIBS := $(shell sdl2-config --libs 2>/dev/null) -lSDL2_image
-
 .PHONY: all check engine main demo clean
 
 all: check
@@ -34,12 +31,12 @@ check-demo:
 # Build the engine executable
 build:
 	@echo "Building voidengine..."
-	$(ODIN) build src/ -out:voidengine $(SDL2_LIBS)
+	$(ODIN) build src/ -out:voidengine
 
 # Build the demo game as a DLL
 build-demo:
 	@echo "Building demo game DLL..."
-	$(ODIN) build examples/demo/src/ $(ENGINE_COLLECTION) -build-mode:dll -no-entry-point -out:examples/demo/game.dll $(SDL2_LIBS)
+	$(ODIN) build examples/demo/src/ $(ENGINE_COLLECTION) -build-mode:dll -no-entry-point -out:examples/demo/game.dll
 
 # Clean build artifacts
 clean:

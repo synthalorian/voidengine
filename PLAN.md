@@ -4,14 +4,14 @@ Game engine where `void run mygame/` just works. Odin. Zero dependencies. Hot-re
 
 ---
 
-## v0.1.0 — Draw (Now)
+## v0.1.0 — Draw (Now) ✅
 
-- [ ] Add SDL2 dependency to build system
-- [ ] Implement `renderer.odin` with real SDL2 draw calls
-- [ ] Clear screen, draw rects, draw sprites from PNG
-- [ ] Implement `input.odin` with SDL2 keyboard + mouse polling
-- [ ] Game loop: process input → update → render at 60fps
-- [ ] Demo game: move a rectangle with arrow keys
+- [x] Add SDL2 dependency to build system
+- [x] Implement `renderer.odin` with real SDL2 draw calls
+- [x] Clear screen, draw rects, draw sprites from PNG
+- [x] Implement `input.odin` with SDL2 keyboard + mouse polling
+- [x] Game loop: process input → update → render at 60fps
+- [x] Demo game: move a rectangle with arrow keys
 
 ## v0.2.0 — Sound + Assets
 
