@@ -13,14 +13,14 @@ Game engine where `void run mygame/` just works. Odin. Zero dependencies. Hot-re
 - [x] Game loop: process input → update → render at 60fps
 - [x] Demo game: move a rectangle with arrow keys
 
-## v0.2.0 — Sound + Assets
+## v0.2.0 — Sound + Assets ✅
 
-- [ ] Add miniaudio or SDL2_mixer for audio
-- [ ] Load and play WAV/OGG sounds
-- [ ] Stream music
-- [ ] Sprite atlas support
-- [ ] Font rendering (TTF or bitmap)
-- [ ] Asset hot-reload (edit PNG, see changes instantly)
+- [x] Add miniaudio or SDL2_mixer for audio
+- [x] Load and play WAV/OGG sounds
+- [x] Stream music
+- [x] Sprite atlas support
+- [x] Font rendering (TTF or bitmap)
+- [x] Asset hot-reload (edit PNG, see changes instantly)
 
 ## v0.3.0 — Ship
 
