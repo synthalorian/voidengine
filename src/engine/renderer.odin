@@ -2,6 +2,8 @@ package engine
 
 import "core:fmt"
 import "core:strings"
+import "core:os"
+import "core:time"
 import SDL "vendor:sdl2"
 import SDL_Image "vendor:sdl2/image"
 
@@ -13,7 +15,10 @@ renderer: ^SDL.Renderer
 Sprite_Entry :: struct {
 	texture: ^SDL.Texture,
 	w, h:    f32,
+	path:    string,
+	mtime:   time.Time,     // For hot-reload tracking
 }
+
 sprites: [dynamic]Sprite_Entry
 
 // --- Renderer lifecycle (called from engine.odin) ---
@@ -54,8 +59,13 @@ renderer_shutdown :: proc() {
 		if entry.texture != nil {
 			SDL.DestroyTexture(entry.texture)
 		}
+		delete(entry.path)
 	}
 	delete(sprites)
+
+	// Also clean up atlases and fonts
+	atlases_shutdown()
+	font_shutdown()
 
 	if renderer != nil {
 		SDL.DestroyRenderer(renderer)
@@ -104,11 +114,16 @@ load_sprite :: proc(path: string) -> int {
 	tw, th: i32
 	SDL.QueryTexture(texture, nil, nil, &tw, &th)
 
+	// Get file modification time for hot-reload
+	mtime := get_file_mtime(path)
+
 	id := len(sprites)
 	append(&sprites, Sprite_Entry{
 		texture = texture,
 		w = f32(tw),
 		h = f32(th),
+		path    = strings.clone(path),
+		mtime   = mtime,
 	})
 	return id
 }
@@ -127,8 +142,57 @@ draw_sprite :: proc(x, y: f32, sprite_id: int) {
 	SDL.RenderCopyF(renderer, entry.texture, nil, &dst)
 }
 
-draw_text :: proc(x, y: f32, text: string) {
-	// TODO: TTF font rendering in v0.2.0
-	// For now, draw a small placeholder rect
-	draw_rect(x, y, 4, 4, 1.0, 1.0, 1.0)
+// --- Hot-reload for sprites ---
+
+get_file_mtime :: proc(path: string) -> time.Time {
+	f, err := os.open(path)
+	if err != os.ERROR_NONE {
+		return time.Time{}
+	}
+	defer os.close(f)
+
+	stat, stat_err := os.fstat(f, context.temp_allocator)
+	if stat_err != os.ERROR_NONE {
+		return time.Time{}
+	}
+
+	return stat.modification_time
+}
+
+reload_sprite :: proc(sprite_id: int) {
+	if sprite_id < 0 || sprite_id >= len(sprites) { return }
+
+	entry := &sprites[sprite_id]
+	if entry.texture != nil {
+		SDL.DestroyTexture(entry.texture)
+	}
+
+	cstr := strings.clone_to_cstring(entry.path)
+	defer delete(cstr)
+
+	texture := SDL_Image.LoadTexture(renderer, cstr)
+	if texture == nil {
+		fmt.println("[RENDERER] Hot-reload failed for sprite:", entry.path)
+		return
+	}
+
+	tw, th: i32
+	SDL.QueryTexture(texture, nil, nil, &tw, &th)
+
+	entry.texture = texture
+	entry.w = f32(tw)
+	entry.h = f32(th)
+	entry.mtime = get_file_mtime(entry.path)
+
+	fmt.println("[RENDERER] Hot-reloaded sprite:", entry.path)
+}
+
+check_sprite_reload :: proc() {
+	for i in 0..<len(sprites) {
+		entry := &sprites[i]
+		current_mtime := get_file_mtime(entry.path)
+		if current_mtime._nsec > entry.mtime._nsec {
+			reload_sprite(i)
+		}
+	}
 }
