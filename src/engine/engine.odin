@@ -43,6 +43,15 @@ run_project :: proc(path: string) {
 	}
 	defer renderer_shutdown()
 
+	if !audio_init() {
+		fmt.println("[WARNING] Failed to initialize audio")
+	}
+	defer audio_shutdown()
+
+	if !font_init() {
+		fmt.println("[WARNING] Failed to initialize font system")
+	}
+
 	if !load_game_dll() {
 		fmt.println("[ERROR] Failed to load game.dll")
 		return
@@ -62,6 +71,9 @@ run_project :: proc(path: string) {
 		// --- Process Input ---
 		process_events()
 		input_poll()
+
+		// --- Check hot-reload ---
+		check_sprite_reload()
 
 		// --- Update ---
 		engine.api.update(FRAME_TIME_S)
@@ -139,6 +151,10 @@ create_project :: proc(name: string) {
 
 	os.make_directory(name)
 	os.make_directory(fmt.tprintf("%s/assets", name))
+	os.make_directory(fmt.tprintf("%s/assets/sprites", name))
+	os.make_directory(fmt.tprintf("%s/assets/sounds", name))
+	os.make_directory(fmt.tprintf("%s/assets/music", name))
+	os.make_directory(fmt.tprintf("%s/assets/fonts", name))
 	os.make_directory(fmt.tprintf("%s/src", name))
 
 	// Write boilerplate
