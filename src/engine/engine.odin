@@ -87,6 +87,29 @@ run_project :: proc(path: string) {
 	if !font_init() {
 		log_warn("Failed to initialize font system")
 	}
+	defer font_shutdown()
+
+	// Initialize v0.5.0 systems
+	physics_init()
+	defer physics_shutdown()
+
+	animation_init()
+	defer animation_shutdown()
+
+	particle_init()
+	defer particle_shutdown()
+
+	camera_init(f32(engine.window_width), f32(engine.window_height))
+	defer camera_shutdown()
+
+	// Initialize v0.6.0 systems
+	save_init()
+	defer save_shutdown()
+
+	mixer_init()
+
+	debug_console_init()
+	defer debug_console_shutdown()
 
 	if !load_game_dll() {
 		log_error("Failed to load game.dll")
@@ -118,6 +141,17 @@ run_project :: proc(path: string) {
 
 		// --- Update ---
 		profiler_begin("update")
+
+		// Update v0.5.0 systems
+		physics_step(f32(engine.last_frame_time))
+		animation_update(f32(engine.last_frame_time))
+		particle_update(f32(engine.last_frame_time))
+		camera_update(f32(engine.last_frame_time))
+
+		// Update v0.6.0 systems
+		state_machine_update_transitions(f32(engine.last_frame_time))
+		music_transition_update(f32(engine.last_frame_time))
+
 		engine.api.update(f32(engine.last_frame_time))
 		profiler_end("update")
 
@@ -125,6 +159,12 @@ run_project :: proc(path: string) {
 		profiler_begin("render")
 		renderer_reset_stats()
 		engine.api.draw()
+
+		// Draw state transition overlay
+		state_machine_draw_transition()
+
+		// Draw debug console on top
+		debug_console_draw()
 
 		// Draw debug overlay on top
 		profiler_begin("debug_overlay")
@@ -161,11 +201,49 @@ process_events :: proc() {
 			engine.running = false
 		case SDL.EventType.KEYDOWN:
 			if event.key.keysym.sym == SDL.Keycode.ESCAPE {
-				engine.running = false
+				if debug_console_is_visible() {
+					debug_console_toggle()
+				} else {
+					engine.running = false
+				}
 			}
-			// F1 toggles debug overlay (can be overridden by config)
+			// F1 toggles debug overlay
 			if event.key.keysym.scancode == SDL.Scancode.F1 {
 				debug_overlay_toggle()
+			}
+			// F2 toggles profiler graph
+			if event.key.keysym.scancode == SDL.Scancode.F2 {
+				debug_overlay.show_profiler = !debug_overlay.show_profiler
+			}
+			// ~ (grave/backtick) toggles debug console
+			if event.key.keysym.scancode == SDL.Scancode.GRAVE {
+				debug_console_toggle()
+			}
+			// Handle debug console input
+			if debug_console_is_visible() {
+				if event.key.keysym.scancode == SDL.Scancode.RETURN {
+					debug_console_execute()
+				} else if event.key.keysym.scancode == SDL.Scancode.BACKSPACE {
+					debug_console_backspace()
+				} else if event.key.keysym.scancode == SDL.Scancode.UP {
+					debug_console_history_prev()
+				} else if event.key.keysym.scancode == SDL.Scancode.DOWN {
+					debug_console_history_next()
+				} else if event.key.keysym.scancode == SDL.Scancode.LEFT {
+					// Handled by console
+				} else if event.key.keysym.scancode == SDL.Scancode.RIGHT {
+					// Handled by console
+				}
+			}
+		case SDL.EventType.TEXTINPUT:
+			if debug_console_is_visible() {
+				// Convert null-terminated [32]u8 to string
+				text_len := 0
+				for i in 0..<32 {
+					if event.text.text[i] == 0 { break }
+					text_len += 1
+				}
+				debug_console_input_text(string(event.text.text[:text_len]))
 			}
 		}
 	}

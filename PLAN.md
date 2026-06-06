@@ -41,6 +41,27 @@ Game engine where `void run mygame/` just works. Odin. Zero dependencies. Hot-re
 - [x] Tests for config, math, logging, and state modules
 - [x] Demo updated to showcase v0.4.0 features
 
+## v0.5.0 — Physics & Animation ✅
+
+- [x] 2D physics engine — rigid bodies, velocity, acceleration, gravity
+- [x] AABB and circle collision resolution (response, not just detection)
+- [x] Sprite animation system — frame-based with timing and looping
+- [x] Tilemap support — load and render Tiled JSON maps
+- [x] Camera system — follow target, smooth damping, bounds clamping
+- [x] Particle system — emitters, lifetime, velocity, color over life
+- [x] Demo: platformer with physics, tilemap, animated sprites
+
+## v0.6.0 — Audio & Polish ✅
+
+- [x] Spatial audio — pan and volume based on listener position
+- [x] Audio mixer with channels (music, SFX, UI) and per-channel volume
+- [x] Music transition system — crossfade between tracks
+- [x] Save/load game state to JSON
+- [x] Screen transitions (fade, slide) via state machine
+- [x] Debug console — in-game command line for inspecting state
+- [x] Performance profiler — frame time graph, memory usage display
+- [x] Second example game: shmup with particles and spatial audio
+
 ## v1.0.0 — Ship It
 
 - [ ] Complete 2D game engine
@@ -68,12 +89,20 @@ SDL2 / miniaudio / OS
 | `src/main.odin` | CLI: run, new, build commands |
 | `src/engine/engine.odin` | Hot-reload, game loop, DLL management |
 | `src/engine/renderer.odin` | SDL2 graphics |
-| `src/engine/audio.odin` | Sound/music playback |
+| `src/engine/audio.odin` | Sound/music playback, spatial audio, mixer |
 | `src/engine/input.odin` | Keyboard, mouse, gamepad |
 | `src/engine/config.odin` | JSON configuration loading |
 | `src/engine/log.odin` | Structured logging |
 | `src/engine/math.odin` | Vec2, Rect, Color, utilities |
-| `src/engine/state.odin` | Game state machine |
+| `src/engine/state.odin` | Game state machine, screen transitions |
+| `src/engine/physics.odin` | 2D physics, rigid bodies, collision |
+| `src/engine/animation.odin` | Sprite animation system |
+| `src/engine/tilemap.odin` | Tiled JSON map loading/rendering |
+| `src/engine/camera.odin` | Camera follow, damping, bounds |
+| `src/engine/particle.odin` | Particle emitters and effects |
+| `src/engine/save.odin` | Save/load game state to JSON |
+| `src/engine/debug_console.odin` | In-game debug command console |
+| `src/engine/profiler.odin` | Frame timing, performance graphs |
 
 ## Local Dev
 

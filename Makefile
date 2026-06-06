@@ -25,7 +25,7 @@ endif
 all: check
 
 # Check all packages for compilation errors
-check: check-engine check-main check-demo check-tests
+check: check-engine check-main check-demo check-shmup check-tests
 	@echo "✅ All packages compile successfully"
 
 # Check the engine package (library, no entry point)
@@ -43,6 +43,11 @@ check-demo:
 	@echo "Checking demo game package..."
 	$(ODIN) check examples/demo/src/ $(ENGINE_COLLECTION) -no-entry-point
 
+# Check shmup game package
+check-shmup:
+	@echo "Checking shmup game package..."
+	$(ODIN) check examples/shmup/src/ $(ENGINE_COLLECTION) -no-entry-point
+
 # Check test packages compile
 check-tests:
 	@echo "Checking test packages..."
@@ -50,9 +55,14 @@ check-tests:
 	$(ODIN) check tests/test_config.odin $(ENGINE_COLLECTION) -file
 	$(ODIN) check tests/test_log.odin $(ENGINE_COLLECTION) -file
 	$(ODIN) check tests/test_state.odin $(ENGINE_COLLECTION) -file
+	$(ODIN) check tests/test_physics.odin $(ENGINE_COLLECTION) -file
+	$(ODIN) check tests/test_animation.odin $(ENGINE_COLLECTION) -file
+	$(ODIN) check tests/test_camera.odin $(ENGINE_COLLECTION) -file
+	$(ODIN) check tests/test_particle.odin $(ENGINE_COLLECTION) -file
+	$(ODIN) check tests/test_save.odin $(ENGINE_COLLECTION) -file
 
 # Build and run tests
-test: test-math test-config test-log test-state
+test: test-math test-config test-log test-state test-physics test-animation test-camera test-particle test-save
 	@echo "✅ All tests passed"
 
 test-math:
@@ -71,6 +81,26 @@ test-state:
 	@echo "Running state tests..."
 	$(ODIN) run tests/test_state.odin $(ENGINE_COLLECTION) -file
 
+test-physics:
+	@echo "Running physics tests..."
+	$(ODIN) run tests/test_physics.odin $(ENGINE_COLLECTION) -file
+
+test-animation:
+	@echo "Running animation tests..."
+	$(ODIN) run tests/test_animation.odin $(ENGINE_COLLECTION) -file
+
+test-camera:
+	@echo "Running camera tests..."
+	$(ODIN) run tests/test_camera.odin $(ENGINE_COLLECTION) -file
+
+test-particle:
+	@echo "Running particle tests..."
+	$(ODIN) run tests/test_particle.odin $(ENGINE_COLLECTION) -file
+
+test-save:
+	@echo "Running save tests..."
+	$(ODIN) run tests/test_save.odin $(ENGINE_COLLECTION) -file
+
 # Build the engine executable
 build:
 	@echo "Building voidengine..."
@@ -85,6 +115,11 @@ build-demo:
 build-standalone:
 	@echo "Building standalone executable..."
 	$(ODIN) build examples/demo/src/ $(ENGINE_COLLECTION) -build-mode:exe -out:demo-standalone$(EXE_EXT)
+
+# Build the shmup game as a DLL
+build-shmup:
+	@echo "Building shmup game DLL..."
+	$(ODIN) build examples/shmup/src/ $(ENGINE_COLLECTION) -build-mode:dll -no-entry-point -out:examples/shmup/game.dll
 
 # Cross-platform builds
 build-linux:
@@ -109,7 +144,9 @@ build-all: build-linux build-windows build-macos
 clean:
 	rm -f voidengine voidengine-linux voidengine-windows.exe voidengine-macos
 	rm -f examples/demo/game.dll
+	rm -f examples/shmup/game.dll
 	rm -rf examples/demo/.voidengine_build
+	rm -rf examples/shmup/.voidengine_build
 
 # Run the demo
 run-demo: build build-demo

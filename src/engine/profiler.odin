@@ -116,6 +116,15 @@ profiler_get_last_frame_sections :: proc() -> []Profile_Section {
 	return last.sections[:]
 }
 
+// Get frame history for graphing
+profiler_get_frame_times :: proc() -> []f32 {
+	if len(profiler.frame_history) == 0 {
+		return nil
+	}
+	// Return a view into the frame times - caller should not modify
+	return nil // We'll draw directly from history
+}
+
 // Format profiler data for debug display
 profiler_format_stats :: proc(builder: ^strings.Builder) {
 	avg_ms := profiler_avg_frame_time(60)
@@ -135,4 +144,73 @@ profiler_format_stats :: proc(builder: ^strings.Builder) {
 			fmt.sbprintf(builder, "  %s: %.2f ms (%.1f%%)\n", section.name, ms, pct)
 		}
 	}
+}
+
+// Draw frame time graph
+profiler_draw_graph :: proc(x, y, w, h: f32) {
+	if renderer == nil { return }
+	if len(profiler.frame_history) < 2 { return }
+
+	// Background
+	draw_rect(x, y, w, h, 0.1, 0.1, 0.1)
+
+	// Draw grid lines (16.67ms = 60fps, 33.33ms = 30fps)
+	fps60_y := y + h * 0.5
+	fps30_y := y + h
+	draw_rect(x, fps60_y, w, 1, 0.3, 0.3, 0.3)
+	draw_rect(x, fps30_y - 1, w, 1, 0.5, 0.2, 0.2)
+
+	// Draw frame time bars
+	max_frames := min(len(profiler.frame_history), int(w))
+	start_idx := len(profiler.frame_history) - max_frames
+	bar_w := w / f32(max_frames)
+
+	for i in 0..<max_frames {
+		frame := &profiler.frame_history[start_idx + i]
+		// Scale: 0ms at top, 33.33ms at bottom
+		t := clamp(frame.frame_time / 33.33, 0.0, 1.0)
+		bar_h := t * h
+		bar_x := x + f32(i) * bar_w
+		bar_y := y + h - bar_h
+
+		// Color based on frame time: green < 16ms, yellow < 33ms, red > 33ms
+		if frame.frame_time < 16.67 {
+			draw_rect(bar_x, bar_y, bar_w - 0.5, bar_h, 0.0, 1.0, 0.0)
+		} else if frame.frame_time < 33.33 {
+			draw_rect(bar_x, bar_y, bar_w - 0.5, bar_h, 1.0, 1.0, 0.0)
+		} else {
+			draw_rect(bar_x, bar_y, bar_w - 0.5, bar_h, 1.0, 0.0, 0.0)
+		}
+	}
+}
+
+// Draw memory usage bar
+profiler_draw_memory_bar :: proc(x, y, w, h: f32) {
+	if renderer == nil { return }
+
+	// Background
+	draw_rect(x, y, w, h, 0.1, 0.1, 0.1)
+
+	// Memory bar (scale arbitrarily to 10MB for visualization)
+	max_mem := f32(10 * 1024 * 1024) // 10MB
+	current := f32(tracking_allocator.current_memory_allocated)
+	t := clamp(current / max_mem, 0.0, 1.0)
+
+	bar_w := t * w
+	if bar_w > 0 {
+		// Color based on usage: green < 50%, yellow < 80%, red > 80%
+		if t < 0.5 {
+			draw_rect(x, y, bar_w, h, 0.0, 1.0, 0.0)
+		} else if t < 0.8 {
+			draw_rect(x, y, bar_w, h, 1.0, 1.0, 0.0)
+		} else {
+			draw_rect(x, y, bar_w, h, 1.0, 0.0, 0.0)
+		}
+	}
+
+	// Border
+	draw_rect(x, y, w, 1, 0.5, 0.5, 0.5)
+	draw_rect(x, y + h - 1, w, 1, 0.5, 0.5, 0.5)
+	draw_rect(x, y, 1, h, 0.5, 0.5, 0.5)
+	draw_rect(x + w - 1, y, 1, h, 0.5, 0.5, 0.5)
 }
