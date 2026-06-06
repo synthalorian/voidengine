@@ -22,13 +22,13 @@ Game engine where `void run mygame/` just works. Odin. Zero dependencies. Hot-re
 - [x] Font rendering (TTF or bitmap)
 - [x] Asset hot-reload (edit PNG, see changes instantly)
 
-## v0.3.0 — Ship
+## v0.3.0 — Ship ✅
 
-- [ ] Implement `build_project()` — compile game + engine to single binary
-- [ ] Cross-platform: Linux, Windows, macOS
-- [ ] Package manager: `void get <package>`
-- [ ] Debug overlay (FPS, memory, draw calls)
-- [ ] Profiling hooks
+- [x] Implement `build_project()` — compile game + engine to single binary
+- [x] Cross-platform: Linux, Windows, macOS
+- [x] Package manager: `void get <package>`
+- [x] Debug overlay (FPS, memory, draw calls)
+- [x] Profiling hooks
 
 ## v1.0.0 — Ship It
 
