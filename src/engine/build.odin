@@ -52,7 +52,7 @@ get_target_arch :: proc() -> string {
 }
 
 // Build a standalone executable from a game project
-// v0.7.0: Produces a single executable with no DLL dependency
+// v1.0.0: Produces a single executable with no DLL dependency
 build_standalone :: proc(path: string, mode: Build_Mode = .DEBUG) -> bool {
 	fmt.println("[BUILD] Building standalone project:", path)
 
@@ -75,7 +75,7 @@ build_standalone :: proc(path: string, mode: Build_Mode = .DEBUG) -> bool {
 
 	// Generate the standalone entry point
 	entry_code := generate_standalone_entry(path, project_name)
-	entry_path := fmt.tprintf("%s/standalone_main.odin", build_dir)
+	entry_path := fmt.tprintf("%s/main.odin", build_dir)
 
 	write_err := os.write_entire_file(entry_path, transmute([]u8)entry_code)
 	if write_err != os.ERROR_NONE {
@@ -83,17 +83,7 @@ build_standalone :: proc(path: string, mode: Build_Mode = .DEBUG) -> bool {
 		return false
 	}
 
-	// Generate a game module wrapper for static linking
-	game_wrapper_code := generate_game_wrapper(path, project_name)
-	game_wrapper_path := fmt.tprintf("%s/game_wrapper.odin", build_dir)
-	
-	write_err2 := os.write_entire_file(game_wrapper_path, transmute([]u8)game_wrapper_code)
-	if write_err2 != os.ERROR_NONE {
-		fmt.println("[BUILD ERROR] Failed to write game wrapper")
-		return false
-	}
-
-	// Determine engine collection path
+	// Determine engine collection path (relative to working directory)
 	engine_collection := get_engine_collection_path()
 
 	// Build flags based on mode
@@ -105,12 +95,13 @@ build_standalone :: proc(path: string, mode: Build_Mode = .DEBUG) -> bool {
 		build_flags = "-o:speed"
 	}
 
-	// v0.7.0: Construct and execute the build command
+	// v1.0.0: Construct and execute the build command
 	fmt.println("[BUILD] Compiling standalone binary:", output_name)
 	fmt.println("[BUILD] Engine collection:", engine_collection)
 	fmt.println("[BUILD] Mode:", mode)
 
 	// Build command: compile the entry point with game and engine collections
+	// The game source is at path/src, engine is at engine_collection
 	build_cmd := fmt.tprintf(
 		"odin build %s -collection:engine=%s -collection:game=%s/src %s -out:%s",
 		build_dir,
@@ -190,7 +181,7 @@ remove_build_dir :: proc(dir: string) {
 }
 
 // Generate a standalone entry point that statically links the game
-// This creates a main() function that initializes the engine and calls game functions directly
+// v1.0.0: Creates a main() function that imports the game package and calls engine.run_standalone_game
 generate_standalone_entry :: proc(project_path: string, project_name: string) -> string {
 	builder := strings.builder_make()
 	defer strings.builder_destroy(&builder)

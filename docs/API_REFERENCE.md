@@ -436,4 +436,4 @@ voidengine help             # Show help message
 
 ---
 
-*Built with VoidEngine v0.7.0* 🌌
+*Built with VoidEngine v1.0.0* 🌌

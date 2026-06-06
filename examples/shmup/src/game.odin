@@ -56,7 +56,7 @@ info_color: engine.Color = {0.8, 0.8, 0.8, 1.0}
 
 @(export)
 game_init :: proc() {
-	engine.log_info("Shmup game initialized! v0.7.0")
+	engine.log_info("Shmup game initialized! v1.0.0")
 
 	// Initialize state machine
 	engine.state_machine_init()
@@ -131,7 +131,7 @@ menu_draw :: proc() {
 
 	if font_id >= 0 {
 		engine.draw_text(280, 200, "VOID SHMUP", font_id, title_color.r, title_color.g, title_color.b)
-		engine.draw_text(260, 260, "v0.6.0 Demo", font_id, info_color.r, info_color.g, info_color.b)
+		engine.draw_text(260, 260, "v1.0.0 Demo", font_id, info_color.r, info_color.g, info_color.b)
 		engine.draw_text(220, 320, "Arrow keys to move, Z to shoot", font_id, info_color.r, info_color.g, info_color.b)
 		engine.draw_text(260, 360, "Press START or A to play", font_id, info_color.r, info_color.g, info_color.b)
 

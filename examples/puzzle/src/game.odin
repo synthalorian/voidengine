@@ -4,7 +4,7 @@ import "engine:engine"
 import "core:fmt"
 import "core:math"
 
-// v0.7.0 — Puzzle Example Game
+// v1.0.0 — Puzzle Example Game
 // Features: grid-based puzzle, save/load progress, state machine (menu/play/victory)
 
 // Game constants
@@ -62,7 +62,7 @@ animating_tiles: int = 0
 
 @(export)
 game_init :: proc() {
-	engine.log_info("Puzzle game initialized! v0.7.0")
+	engine.log_info("Puzzle game initialized! v1.0.0")
 
 	// Initialize state machine
 	engine.state_machine_init()

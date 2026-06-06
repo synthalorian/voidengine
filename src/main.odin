@@ -5,7 +5,7 @@ import "core:os"
 import "engine"
 
 main :: proc() {
-	fmt.println("🎹 VoidEngine v0.7.0")
+	fmt.println("🎹 VoidEngine v1.0.0")
 	fmt.println("Usage: void <command> [args]")
 
 	if len(os.args) < 2 {

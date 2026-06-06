@@ -45,7 +45,7 @@ info_color: engine.Color = {0.8, 0.8, 0.8, 1.0}
 
 @(export)
 game_init :: proc() {
-	engine.log_info("Demo game initialized! v0.7.0")
+	engine.log_info("Demo game initialized! v1.0.0")
 
 	// Initialize state machine
 	engine.state_machine_init()
@@ -143,7 +143,7 @@ menu_draw :: proc() {
 	engine.clear(0.05, 0.05, 0.15)
 
 	if font_id >= 0 {
-		engine.draw_text(250, 120, "VoidEngine Demo v0.6.0", font_id, title_color.r, title_color.g, title_color.b)
+		engine.draw_text(250, 120, "VoidEngine Demo v1.0.0", font_id, title_color.r, title_color.g, title_color.b)
 
 		// v0.5.0 features
 		engine.draw_text(250, 180, "v0.5.0 Features:", font_id, info_color.r, info_color.g, info_color.b)
@@ -313,7 +313,7 @@ play_draw :: proc() {
 
 	// UI
 	if font_id >= 0 {
-		engine.draw_text(10, 10, "VoidEngine Demo v0.6.0", font_id, title_color.r, title_color.g, title_color.b)
+		engine.draw_text(10, 10, "VoidEngine Demo v1.0.0", font_id, title_color.r, title_color.g, title_color.b)
 		engine.draw_text(10, 40, "Arrow keys to move, Z/A to jump", font_id, info_color.r, info_color.g, info_color.b)
 		engine.draw_text(10, 70, "SELECT to pause, ~ for console, F5 to save", font_id, info_color.r, info_color.g, info_color.b)
 

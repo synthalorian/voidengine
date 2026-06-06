@@ -73,13 +73,13 @@ Game engine where `void run mygame/` just works. Odin. Zero dependencies. Hot-re
 - [x] Cross-platform build verification (Linux, Windows via Wine, macOS notes)
 - [x] Package manager — `void get` fetches from git repos
 
-## v1.0.0 — Ship It
+## v1.0.0 — Ship It ✅
 
-- [ ] Complete 2D game engine
-- [ ] Hot-reload works flawlessly
-- [ ] Standalone build produces single executable
-- [ ] Documentation + tutorial
-- [ ] Example games: platformer, shmup, puzzle
+- [x] Complete 2D game engine
+- [x] Hot-reload works flawlessly
+- [x] Standalone build produces single executable
+- [x] Documentation + tutorial
+- [x] Example games: platformer, shmup, puzzle
 
 ---
 
