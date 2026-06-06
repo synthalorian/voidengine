@@ -269,6 +269,77 @@ package_manager_remove :: proc(package_name: string) -> bool {
 	return true
 }
 
+// v0.7.0: Update an installed package from git
+package_manager_update :: proc(package_name: string) -> bool {
+	install_path := fmt.tprintf("%s/%s", PACKAGES_DIR, package_name)
+
+	if !os.exists(install_path) {
+		fmt.println("[PACKAGE] Package not found:", package_name)
+		fmt.println("[PACKAGE] Install first with: void get", package_name)
+		return false
+	}
+
+	fmt.println("[PACKAGE] Updating:", package_name)
+
+	// Check if it's a git repository
+	git_dir := fmt.tprintf("%s/.git", install_path)
+	if os.exists(git_dir) {
+		// Use git pull to update
+		cmd := fmt.tprintf("cd \"%s\" && git pull", install_path)
+		cmd_cstr := strings.clone_to_cstring(cmd)
+		defer delete(cmd_cstr)
+
+		err := libc.system(cmd_cstr)
+		if err != 0 {
+			fmt.println("[PACKAGE ERROR] Failed to update package")
+			return false
+		}
+
+		fmt.println("[PACKAGE] Successfully updated:", package_name)
+		return true
+	}
+
+	fmt.println("[PACKAGE] Not a git repository, cannot update:", package_name)
+	return false
+}
+
+// v0.7.0: Update all installed packages
+package_manager_update_all :: proc() {
+	package_manager_init()
+
+	fmt.println("=== Updating All Packages ===")
+
+	if !os.exists(PACKAGES_DIR) {
+		fmt.println("No packages installed")
+		return
+	}
+
+	fd, err := os.open(PACKAGES_DIR)
+	if err != os.ERROR_NONE {
+		fmt.println("[PACKAGE ERROR] Cannot read packages directory")
+		return
+	}
+	defer os.close(fd)
+
+	fis, read_err := os.read_dir(fd, -1, context.allocator)
+	if read_err != os.ERROR_NONE {
+		fmt.println("[PACKAGE ERROR] Cannot list packages")
+		return
+	}
+	defer delete(fis)
+
+	updated := 0
+	for fi in fis {
+		if fi.type == .Directory {
+			if package_manager_update(fi.name) {
+				updated += 1
+			}
+		}
+	}
+
+	fmt.println("=== Updated", updated, "packages ===")
+}
+
 // Show package manager help
 package_manager_help :: proc() {
 	fmt.println("=== VoidEngine Package Manager ===")
@@ -276,9 +347,11 @@ package_manager_help :: proc() {
 	fmt.println("Usage: void get <package>")
 	fmt.println("")
 	fmt.println("Commands:")
-	fmt.println("  void get <name>       Install a package by name")
-	fmt.println("  void get <git-url>    Install from a Git repository")
+	fmt.println("  void get <name>        Install a package by name")
+	fmt.println("  void get <git-url>     Install from a Git repository")
 	fmt.println("  void get <local-path>  Install from a local directory")
+	fmt.println("  void update <name>     Update an installed package")
+	fmt.println("  void update-all        Update all installed packages")
 	fmt.println("")
 	fmt.println("Known packages:")
 	for name, info in default_registry {

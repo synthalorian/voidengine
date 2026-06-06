@@ -5,7 +5,7 @@ import "core:os"
 import "engine"
 
 main :: proc() {
-	fmt.println("🎹 VoidEngine v0.6.0")
+	fmt.println("🎹 VoidEngine v0.7.0")
 	fmt.println("Usage: void <command> [args]")
 
 	if len(os.args) < 2 {
@@ -45,6 +45,21 @@ main :: proc() {
 		success := engine.get_package(os.args[2])
 		if !success {
 			os.exit(1)
+		}
+
+	case "update":
+		if len(os.args) < 3 {
+			fmt.println("Usage: void update <package>")
+			fmt.println("       void update-all")
+			return
+		}
+		if os.args[2] == "-all" || os.args[2] == "--all" {
+			engine.package_manager_update_all()
+		} else {
+			success := engine.package_manager_update(os.args[2])
+			if !success {
+				os.exit(1)
+			}
 		}
 
 	case "packages":

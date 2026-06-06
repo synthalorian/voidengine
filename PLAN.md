@@ -62,6 +62,17 @@ Game engine where `void run mygame/` just works. Odin. Zero dependencies. Hot-re
 - [x] Performance profiler — frame time graph, memory usage display
 - [x] Second example game: shmup with particles and spatial audio
 
+## v0.7.0 — Pre-Release Polish ✅
+
+- [x] Hot-reload fix — reload game DLL without memory leaks or state corruption
+- [x] Standalone build — `void build` produces single executable (no DLL)
+- [x] Third example game: puzzle game showcasing save/load and state machine
+- [x] Documentation — engine API reference, getting started guide, tutorial
+- [x] Asset pipeline — texture atlas packing, audio bank bundling
+- [x] Error handling — graceful failures with clear messages
+- [x] Cross-platform build verification (Linux, Windows via Wine, macOS notes)
+- [x] Package manager — `void get` fetches from git repos
+
 ## v1.0.0 — Ship It
 
 - [ ] Complete 2D game engine

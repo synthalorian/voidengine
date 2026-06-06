@@ -5,6 +5,7 @@ import "core:os"
 import "core:time"
 import "core:strings"
 import "core:path/filepath"
+import "core:c/libc"
 
 // Build system for standalone executables
 // Compiles game + engine into a single binary without DLL hot-reload
@@ -51,6 +52,7 @@ get_target_arch :: proc() -> string {
 }
 
 // Build a standalone executable from a game project
+// v0.7.0: Produces a single executable with no DLL dependency
 build_standalone :: proc(path: string, mode: Build_Mode = .DEBUG) -> bool {
 	fmt.println("[BUILD] Building standalone project:", path)
 
@@ -67,8 +69,8 @@ build_standalone :: proc(path: string, mode: Build_Mode = .DEBUG) -> bool {
 	build_dir := fmt.tprintf("%s/.voidengine_build", path)
 	os.make_directory(build_dir)
 	defer {
-		// Clean up build directory
-		os.remove(build_dir)
+		// Clean up build directory after build
+		remove_build_dir(build_dir)
 	}
 
 	// Generate the standalone entry point
@@ -81,8 +83,17 @@ build_standalone :: proc(path: string, mode: Build_Mode = .DEBUG) -> bool {
 		return false
 	}
 
+	// Generate a game module wrapper for static linking
+	game_wrapper_code := generate_game_wrapper(path, project_name)
+	game_wrapper_path := fmt.tprintf("%s/game_wrapper.odin", build_dir)
+	
+	write_err2 := os.write_entire_file(game_wrapper_path, transmute([]u8)game_wrapper_code)
+	if write_err2 != os.ERROR_NONE {
+		fmt.println("[BUILD ERROR] Failed to write game wrapper")
+		return false
+	}
+
 	// Determine engine collection path
-	// The engine collection should point to where the engine source is
 	engine_collection := get_engine_collection_path()
 
 	// Build flags based on mode
@@ -94,20 +105,88 @@ build_standalone :: proc(path: string, mode: Build_Mode = .DEBUG) -> bool {
 		build_flags = "-o:speed"
 	}
 
-	// Construct the build command
-	// We build from the build directory which contains the entry point
-	// and references the game code via import
+	// v0.7.0: Construct and execute the build command
 	fmt.println("[BUILD] Compiling standalone binary:", output_name)
 	fmt.println("[BUILD] Engine collection:", engine_collection)
 	fmt.println("[BUILD] Mode:", mode)
 
-	// For now, print instructions on how to build manually
-	// Full automation would require invoking odin compiler directly
-	fmt.println("\n[BUILD] To build manually, run:")
-	fmt.printf("  odin build %s -collection:engine=%s -collection:game=%s %s -out:%s\n",
-		build_dir, engine_collection, path, build_flags, output_name)
+	// Build command: compile the entry point with game and engine collections
+	build_cmd := fmt.tprintf(
+		"odin build %s -collection:engine=%s -collection:game=%s/src %s -out:%s",
+		build_dir,
+		engine_collection,
+		path,
+		build_flags,
+		output_name,
+	)
 
+	fmt.println("[BUILD] Executing:", build_cmd)
+	
+	// Execute the build command
+	cmd_cstr := strings.clone_to_cstring(build_cmd)
+	defer delete(cmd_cstr)
+	
+	err := libc.system(cmd_cstr)
+	if err != 0 {
+		fmt.println("[BUILD ERROR] Build failed with exit code:", err)
+		fmt.println("[BUILD] Make sure Odin compiler is in your PATH")
+		return false
+	}
+
+	fmt.println("[BUILD] Successfully built:", output_name)
+	fmt.println("[BUILD] Run with: ./", output_name)
 	return true
+}
+
+// v0.7.0: Generate a game wrapper that exports the game's functions for static linking
+generate_game_wrapper :: proc(project_path: string, project_name: string) -> string {
+	builder := strings.builder_make()
+	defer strings.builder_destroy(&builder)
+
+	fmt.sbprintln(&builder, "package game_wrapper")
+	fmt.sbprintln(&builder, "")
+	fmt.sbprintln(&builder, "import \"game:game\"")
+	fmt.sbprintln(&builder, "")
+	fmt.sbprintln(&builder, "// Wrapper that re-exports game functions for static linking")
+	fmt.sbprintln(&builder, "")
+	fmt.sbprintln(&builder, "@(export)")
+	fmt.sbprintln(&builder, "game_init :: proc() {")
+	fmt.sbprintln(&builder, "    game.game_init()")
+	fmt.sbprintln(&builder, "}")
+	fmt.sbprintln(&builder, "")
+	fmt.sbprintln(&builder, "@(export)")
+	fmt.sbprintln(&builder, "game_update :: proc(dt: f32) {")
+	fmt.sbprintln(&builder, "    game.game_update(dt)")
+	fmt.sbprintln(&builder, "}")
+	fmt.sbprintln(&builder, "")
+	fmt.sbprintln(&builder, "@(export)")
+	fmt.sbprintln(&builder, "game_draw :: proc() {")
+	fmt.sbprintln(&builder, "    game.game_draw()")
+	fmt.sbprintln(&builder, "}")
+	fmt.sbprintln(&builder, "")
+	fmt.sbprintln(&builder, "@(export)")
+	fmt.sbprintln(&builder, "game_shutdown :: proc() {")
+	fmt.sbprintln(&builder, "    game.game_shutdown()")
+	fmt.sbprintln(&builder, "}")
+
+	return strings.to_string(builder)
+}
+
+// v0.7.0: Helper to remove build directory and its contents
+remove_build_dir :: proc(dir: string) {
+	// On Unix systems, use rm -rf
+	when ODIN_OS != .Windows {
+		cmd := fmt.tprintf("rm -rf \"%s\"", dir)
+		cmd_cstr := strings.clone_to_cstring(cmd)
+		defer delete(cmd_cstr)
+		libc.system(cmd_cstr)
+	} else {
+		// On Windows, use rmdir /S /Q
+		cmd := fmt.tprintf("rmdir /S /Q \"%s\"", dir)
+		cmd_cstr := strings.clone_to_cstring(cmd)
+		defer delete(cmd_cstr)
+		libc.system(cmd_cstr)
+	}
 }
 
 // Generate a standalone entry point that statically links the game

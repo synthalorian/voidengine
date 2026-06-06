@@ -56,7 +56,7 @@ info_color: engine.Color = {0.8, 0.8, 0.8, 1.0}
 
 @(export)
 game_init :: proc() {
-	engine.log_info("Shmup game initialized! v0.6.0")
+	engine.log_info("Shmup game initialized! v0.7.0")
 
 	// Initialize state machine
 	engine.state_machine_init()

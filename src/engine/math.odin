@@ -250,17 +250,34 @@ line_intersection :: proc(a1, a2, b1, b2: Vec2) -> (Vec2, bool) {
 
 // --- Random utilities ---
 
+// Global random seed (v0.7.0: proper random state)
+random_seed: u32 = 123456789
+
+random_set_seed :: proc(seed: u32) {
+	random_seed = seed
+}
+
+random_get_seed :: proc() -> u32 {
+	return random_seed
+}
+
+// Generate next random value and update seed
+random_next :: proc() -> u32 {
+	random_seed = random_seed * 1103515245 + 12345
+	return random_seed & 0x7fffffff
+}
+
+// Return random float in range [0, 1)
+random_f32 :: proc() -> f32 {
+	return f32(random_next()) / f32(0x7fffffff)
+}
+
 random_range :: proc(min_val, max_val: f32) -> f32 {
-	// Simple LCG random number generator
-	// In production, use core:math/rand
-	seed := u32(123456789)
-	seed = seed * 1103515245 + 12345
-	t := f32(seed) / f32(0x7fffffff)
-	return min_val + t * (max_val - min_val)
+	return min_val + random_f32() * (max_val - min_val)
 }
 
 random_int :: proc(min_val, max_val: int) -> int {
-	return min_val + int(random_range(0, f32(max_val - min_val + 1)))
+	return min_val + int(random_f32() * f32(max_val - min_val + 1))
 }
 
 random_vec2_in_rect :: proc(r: Rect) -> Vec2 {

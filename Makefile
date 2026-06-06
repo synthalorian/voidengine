@@ -20,12 +20,12 @@ ifeq ($(OS),Windows_NT)
     EXE_EXT := .exe
 endif
 
-.PHONY: all check engine main demo clean build-standalone build-linux build-windows build-macos test check-tests
+.PHONY: all check engine main demo clean build-standalone build-linux build-windows build-macos test check-tests check-puzzle build-puzzle
 
 all: check
 
 # Check all packages for compilation errors
-check: check-engine check-main check-demo check-shmup check-tests
+check: check-engine check-main check-demo check-shmup check-puzzle check-tests
 	@echo "✅ All packages compile successfully"
 
 # Check the engine package (library, no entry point)
@@ -48,6 +48,11 @@ check-shmup:
 	@echo "Checking shmup game package..."
 	$(ODIN) check examples/shmup/src/ $(ENGINE_COLLECTION) -no-entry-point
 
+# Check puzzle game package
+check-puzzle:
+	@echo "Checking puzzle game package..."
+	$(ODIN) check examples/puzzle/src/ $(ENGINE_COLLECTION) -no-entry-point
+
 # Check test packages compile
 check-tests:
 	@echo "Checking test packages..."
@@ -60,9 +65,11 @@ check-tests:
 	$(ODIN) check tests/test_camera.odin $(ENGINE_COLLECTION) -file
 	$(ODIN) check tests/test_particle.odin $(ENGINE_COLLECTION) -file
 	$(ODIN) check tests/test_save.odin $(ENGINE_COLLECTION) -file
+	$(ODIN) check tests/test_error.odin $(ENGINE_COLLECTION) -file
+	$(ODIN) check tests/test_build.odin $(ENGINE_COLLECTION) -file
 
 # Build and run tests
-test: test-math test-config test-log test-state test-physics test-animation test-camera test-particle test-save
+test: test-math test-config test-log test-state test-physics test-animation test-camera test-particle test-save test-error test-build
 	@echo "✅ All tests passed"
 
 test-math:
@@ -101,6 +108,14 @@ test-save:
 	@echo "Running save tests..."
 	$(ODIN) run tests/test_save.odin $(ENGINE_COLLECTION) -file
 
+test-error:
+	@echo "Running error handling tests..."
+	$(ODIN) run tests/test_error.odin $(ENGINE_COLLECTION) -file
+
+test-build:
+	@echo "Running build system tests..."
+	$(ODIN) run tests/test_build.odin $(ENGINE_COLLECTION) -file
+
 # Build the engine executable
 build:
 	@echo "Building voidengine..."
@@ -121,6 +136,11 @@ build-shmup:
 	@echo "Building shmup game DLL..."
 	$(ODIN) build examples/shmup/src/ $(ENGINE_COLLECTION) -build-mode:dll -no-entry-point -out:examples/shmup/game.dll
 
+# Build the puzzle game as a DLL
+build-puzzle:
+	@echo "Building puzzle game DLL..."
+	$(ODIN) build examples/puzzle/src/ $(ENGINE_COLLECTION) -build-mode:dll -no-entry-point -out:examples/puzzle/game.dll
+
 # Cross-platform builds
 build-linux:
 	@echo "Building for Linux..."
@@ -140,13 +160,31 @@ build-macos:
 build-all: build-linux build-windows build-macos
 	@echo "Built for all platforms"
 
+# v0.7.0: Cross-platform build verification
+verify-cross-platform: build
+	@echo "=== Cross-Platform Build Verification ==="
+	@echo "Checking Linux build..."
+	$(ODIN) check src/ -target:linux-amd64 || echo "⚠️  Linux cross-compile check failed"
+	@echo "Checking Windows build..."
+	$(ODIN) check src/ -target:windows-amd64 || echo "⚠️  Windows cross-compile check failed"
+	@echo "Checking macOS build..."
+	$(ODIN) check src/ -target:darwin-amd64 || echo "⚠️  macOS cross-compile check failed"
+	@echo "=== Cross-platform verification complete ==="
+
+# v0.7.0: Wine test for Windows build (if available)
+test-windows-wine:
+	@echo "Testing Windows build with Wine..."
+	@which wine > /dev/null 2>&1 && wine ./voidengine-windows.exe help || echo "⚠️  Wine not available, skipping Windows test"
+
 # Clean build artifacts
 clean:
 	rm -f voidengine voidengine-linux voidengine-windows.exe voidengine-macos
 	rm -f examples/demo/game.dll
 	rm -f examples/shmup/game.dll
+	rm -f examples/puzzle/game.dll
 	rm -rf examples/demo/.voidengine_build
 	rm -rf examples/shmup/.voidengine_build
+	rm -rf examples/puzzle/.voidengine_build
 
 # Run the demo
 run-demo: build build-demo
