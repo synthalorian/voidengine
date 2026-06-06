@@ -110,6 +110,7 @@ draw_text :: proc(x, y: f32, text: string, font_id: int = 0, r: f32 = 1.0, g: f3
 		h = f32(surface.h),
 	}
 	SDL.RenderCopyF(renderer, texture, nil, &dst)
+	renderer_increment_draw_calls()
 }
 
 // --- Atlas API ---
@@ -176,6 +177,7 @@ draw_atlas_frame :: proc(x, y: f32, atlas_id: int, frame_id: int) {
 		h = frame.src_h,
 	}
 	SDL.RenderCopyF(renderer, atlas.texture, &src, &dst)
+	renderer_increment_draw_calls()
 }
 
 // Cleanup function for atlases

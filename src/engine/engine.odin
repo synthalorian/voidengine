@@ -25,6 +25,7 @@ Engine :: struct {
 	project_path:  string,
 	window_width:  i32,
 	window_height: i32,
+	last_frame_time: f64,  // Actual frame time in seconds
 }
 
 engine: Engine
@@ -36,6 +37,14 @@ run_project :: proc(path: string) {
 	engine.window_width = 800
 	engine.window_height = 600
 	engine.running = true
+	engine.last_frame_time = 0.0
+
+	// Initialize profiler and debug overlay
+	profiler_init()
+	defer profiler_shutdown()
+
+	debug_overlay_init()
+	defer debug_overlay_shutdown()
 
 	if !renderer_init(engine.window_width, engine.window_height, "VoidEngine") {
 		fmt.println("[ERROR] Failed to initialize renderer")
@@ -60,32 +69,59 @@ run_project :: proc(path: string) {
 	engine.api.init()
 	defer engine.api.shutdown()
 
-	// 60 FPS timing
+	// Frame timing variables
 	TARGET_FPS :: 60
-	FRAME_TIME_MS :: 1000 / TARGET_FPS
-	FRAME_TIME_S :: f32(1.0 / f64(TARGET_FPS))
+	TARGET_FRAME_TIME :: 1.0 / f64(TARGET_FPS)
 
 	for engine.running {
-		frame_start := SDL.GetTicks()
+		frame_start := time.tick_now()
+
+		profiler_begin_frame()
 
 		// --- Process Input ---
+		profiler_begin("input")
 		process_events()
 		input_poll()
+		profiler_end("input")
 
 		// --- Check hot-reload ---
+		profiler_begin("hot_reload")
 		check_sprite_reload()
+		profiler_end("hot_reload")
 
 		// --- Update ---
-		engine.api.update(FRAME_TIME_S)
+		profiler_begin("update")
+		engine.api.update(f32(engine.last_frame_time))
+		profiler_end("update")
 
 		// --- Render ---
+		profiler_begin("render")
+		renderer_reset_stats()
 		engine.api.draw()
+
+		// Draw debug overlay on top
+		profiler_begin("debug_overlay")
+		debug_overlay_draw()
+		profiler_end("debug_overlay")
+
 		present()
+		profiler_end("render")
+
+		profiler_end_frame()
 
 		// --- Frame limiting ---
-		frame_time := SDL.GetTicks() - frame_start
-		if frame_time < u32(FRAME_TIME_MS) {
-			SDL.Delay(u32(FRAME_TIME_MS) - frame_time)
+		frame_end := time.tick_now()
+		frame_duration := time.tick_diff(frame_start, frame_end)
+		frame_duration_sec := time.duration_seconds(frame_duration)
+		engine.last_frame_time = frame_duration_sec
+
+		// Update debug overlay with actual frame time
+		frame_time_ms := f32(frame_duration_sec * 1000.0)
+		debug_overlay_update(frame_time_ms)
+
+		if frame_duration_sec < TARGET_FRAME_TIME {
+			sleep_time := TARGET_FRAME_TIME - frame_duration_sec
+			time.sleep(time.Duration(sleep_time * f64(time.Second)))
 		}
 	}
 }
@@ -99,6 +135,10 @@ process_events :: proc() {
 		case SDL.EventType.KEYDOWN:
 			if event.key.keysym.sym == SDL.Keycode.ESCAPE {
 				engine.running = false
+			}
+			// F1 toggles debug overlay
+			if event.key.keysym.scancode == SDL.Scancode.F1 {
+				debug_overlay_toggle()
 			}
 		}
 	}
@@ -189,5 +229,90 @@ game_shutdown :: proc() {
 
 build_project :: proc(path: string) {
 	fmt.println("[ENGINE] Building standalone:", path)
-	// TODO: Compile game + engine into single binary
+
+	// Determine project name from path
+	project_name := path
+	for i := len(path) - 1; i >= 0; i -= 1 {
+		if path[i] == '/' || path[i] == '\\' {
+			project_name = path[i+1:]
+			break
+		}
+	}
+	if project_name == "" {
+		project_name = "game"
+	}
+
+	// Get current executable directory to find engine collection
+	exe_dir := get_executable_directory()
+	engine_collection := fmt.tprintf("-collection:engine=%s", exe_dir)
+
+	// Determine output name based on platform
+	output_name := project_name
+	when ODIN_OS == .Windows {
+		output_name = fmt.tprintf("%s.exe", project_name)
+	}
+	when ODIN_OS == .Darwin {
+		output_name = project_name  // macOS has no extension
+	}
+
+	// For standalone build, we compile the game source together with the engine
+	// We create a temporary wrapper that statically links the game
+	wrapper_code := generate_standalone_wrapper(path)
+	wrapper_path := fmt.tprintf("%s/.voidengine_build_wrapper.odin", path)
+
+	write_err := os.write_entire_file(wrapper_path, transmute([]u8)wrapper_code)
+	if write_err != os.ERROR_NONE {
+		fmt.println("[ERROR] Failed to write standalone wrapper")
+		return
+	}
+	defer os.remove(wrapper_path)
+
+	// Build command: compile game src + wrapper as executable
+	build_cmd := fmt.tprintf(
+		"odin build %s %s -out:%s",
+		path,
+		engine_collection,
+		output_name,
+	)
+
+	fmt.println("[BUILD] Command:", build_cmd)
+	fmt.println("[BUILD] This feature requires the game to be compiled as a static binary.")
+	fmt.println("[BUILD] For now, use: odin build", path, engine_collection, "-out:", output_name)
+}
+
+// Helper to get the directory containing the engine executable
+get_executable_directory :: proc() -> string {
+	// Return the path to the engine collection (relative to working directory)
+	// In practice, this should be resolved from the executable location
+	return "src"
+}
+
+// Generate a wrapper file that includes game code for static compilation
+generate_standalone_wrapper :: proc(project_path: string) -> string {
+	return fmt.tprintf(`package main
+
+import "engine:engine"
+import "core:fmt"
+
+// Standalone wrapper - game code is compiled directly into the binary
+// The game package should be imported here
+
+main :: proc() {
+	fmt.println("[STANDALONE] Starting %s...")
+	engine.run_standalone("%s")
+}
+`, project_path, project_path)
+}
+
+// run_standalone runs a game without DLL hot-reloading (for built executables)
+run_standalone :: proc(path: string) {
+	fmt.println("[STANDALONE] Running:", path)
+	// TODO: Implement static game loading (no DLL)
+	// This would require the game to be compiled as a static library
+}
+
+// get_package fetches and installs an external package
+get_package :: proc(package_name: string) -> bool {
+	fmt.println("[PACKAGE] Fetching:", package_name)
+	return package_manager_fetch(package_name)
 }

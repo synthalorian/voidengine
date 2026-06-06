@@ -97,6 +97,7 @@ draw_rect :: proc(x, y, w, h: f32, r, g, b: f32) {
 	SDL.SetRenderDrawColor(renderer, u8(r * 255), u8(g * 255), u8(b * 255), 255)
 	rect := SDL.FRect{ x = x, y = y, w = w, h = h }
 	SDL.RenderFillRectF(renderer, &rect)
+	renderer_increment_draw_calls()
 }
 
 load_sprite :: proc(path: string) -> int {
@@ -140,6 +141,7 @@ draw_sprite :: proc(x, y: f32, sprite_id: int) {
 		h = entry.h,
 	}
 	SDL.RenderCopyF(renderer, entry.texture, nil, &dst)
+	renderer_increment_draw_calls()
 }
 
 // --- Hot-reload for sprites ---
