@@ -4,11 +4,8 @@ import "core:fmt"
 import "core:os"
 import "core:dynlib"
 import "core:time"
+import "core:strings"
 import SDL "vendor:sdl2"
-
-print :: proc(msg: string) {
-	fmt.println(msg)
-}
 
 Game_API :: struct {
 	init:     proc(),
@@ -18,26 +15,54 @@ Game_API :: struct {
 }
 
 Engine :: struct {
-	running:       bool,
-	game_dll:      dynlib.Library,
-	api:           Game_API,
-	last_reload:   time.Time,
-	project_path:  string,
-	window_width:  i32,
-	window_height: i32,
+	running:         bool,
+	game_dll:        dynlib.Library,
+	api:             Game_API,
+	last_reload:     time.Time,
+	project_path:    string,
+	window_width:    i32,
+	window_height:   i32,
 	last_frame_time: f64,  // Actual frame time in seconds
+	config:          Game_Config,
+	config_loaded:   bool,
 }
 
 engine: Engine
 
 run_project :: proc(path: string) {
-	fmt.println("[ENGINE] Loading project:", path)
+	// Initialize logging first
+	log_init(.INFO, true, true)
+	defer log_shutdown()
+
+	log_info("Loading project: %s", path)
 
 	engine.project_path = path
 	engine.window_width = 800
 	engine.window_height = 600
 	engine.running = true
 	engine.last_frame_time = 0.0
+	engine.config_loaded = false
+
+	// Load project configuration
+	config_path := get_project_config_path(path)
+	cfg, ok := config_load(config_path)
+	if ok {
+		engine.config = cfg
+		engine.config_loaded = true
+		engine.window_width = cfg.window.width
+		engine.window_height = cfg.window.height
+		config_apply_log_level(&engine.config)
+		config_apply_audio(&engine.config)
+		load_keybindings_from_config(&engine.config)
+		if cfg.debug.show_overlay {
+			debug_overlay_toggle()
+		}
+	} else {
+		// Use defaults
+		engine.config = default_config()
+		init_default_keybindings()
+		log_info("Using default configuration")
+	}
 
 	// Initialize profiler and debug overlay
 	profiler_init()
@@ -46,23 +71,25 @@ run_project :: proc(path: string) {
 	debug_overlay_init()
 	defer debug_overlay_shutdown()
 
-	if !renderer_init(engine.window_width, engine.window_height, "VoidEngine") {
-		fmt.println("[ERROR] Failed to initialize renderer")
+	window_title := engine.config.window.title if engine.config_loaded else "VoidEngine"
+	window_title_cstr := strings.clone_to_cstring(window_title)
+	if !renderer_init(engine.window_width, engine.window_height, window_title_cstr) {
+		log_error("Failed to initialize renderer")
 		return
 	}
 	defer renderer_shutdown()
 
 	if !audio_init() {
-		fmt.println("[WARNING] Failed to initialize audio")
+		log_warn("Failed to initialize audio")
 	}
 	defer audio_shutdown()
 
 	if !font_init() {
-		fmt.println("[WARNING] Failed to initialize font system")
+		log_warn("Failed to initialize font system")
 	}
 
 	if !load_game_dll() {
-		fmt.println("[ERROR] Failed to load game.dll")
+		log_error("Failed to load game.dll")
 		return
 	}
 
@@ -136,7 +163,7 @@ process_events :: proc() {
 			if event.key.keysym.sym == SDL.Keycode.ESCAPE {
 				engine.running = false
 			}
-			// F1 toggles debug overlay
+			// F1 toggles debug overlay (can be overridden by config)
 			if event.key.keysym.scancode == SDL.Scancode.F1 {
 				debug_overlay_toggle()
 			}
@@ -187,7 +214,7 @@ should_reload :: proc() -> bool {
 }
 
 create_project :: proc(name: string) {
-	fmt.println("[ENGINE] Creating project:", name)
+	log_info("Creating project: %s", name)
 
 	os.make_directory(name)
 	os.make_directory(fmt.tprintf("%s/assets", name))
@@ -197,14 +224,14 @@ create_project :: proc(name: string) {
 	os.make_directory(fmt.tprintf("%s/assets/fonts", name))
 	os.make_directory(fmt.tprintf("%s/src", name))
 
-	// Write boilerplate
+	// Write boilerplate game code
 	main_code := `package game
 
 import "engine:engine"
 
 @(export)
 game_init :: proc() {
-	engine.print("Hello from the void!")
+	engine.log_info("Hello from the void!")
 }
 
 @(export)
@@ -224,11 +251,16 @@ game_shutdown :: proc() {
 `
 	_ = os.write_entire_file(fmt.tprintf("%s/src/game.odin", name), transmute([]u8)main_code)
 
-	fmt.println("[ENGINE] Project created at ./", name)
+	// Write default config.json
+	config_code := generate_default_config()
+	_ = os.write_entire_file(fmt.tprintf("%s/config.json", name), transmute([]u8)config_code)
+
+	log_info("Project created at ./%s", name)
+	log_info("Edit %s/config.json to customize settings", name)
 }
 
 build_project :: proc(path: string) {
-	fmt.println("[ENGINE] Building standalone:", path)
+	log_info("Building standalone: %s", path)
 
 	// Determine project name from path
 	project_name := path
@@ -262,7 +294,7 @@ build_project :: proc(path: string) {
 
 	write_err := os.write_entire_file(wrapper_path, transmute([]u8)wrapper_code)
 	if write_err != os.ERROR_NONE {
-		fmt.println("[ERROR] Failed to write standalone wrapper")
+		log_error("Failed to write standalone wrapper")
 		return
 	}
 	defer os.remove(wrapper_path)
@@ -275,9 +307,9 @@ build_project :: proc(path: string) {
 		output_name,
 	)
 
-	fmt.println("[BUILD] Command:", build_cmd)
-	fmt.println("[BUILD] This feature requires the game to be compiled as a static binary.")
-	fmt.println("[BUILD] For now, use: odin build", path, engine_collection, "-out:", output_name)
+	log_info("Build command: %s", build_cmd)
+	log_info("This feature requires the game to be compiled as a static binary.")
+	log_info("For now, use: odin build %s %s -out:%s", path, engine_collection, output_name)
 }
 
 // Helper to get the directory containing the engine executable
@@ -306,13 +338,13 @@ main :: proc() {
 
 // run_standalone runs a game without DLL hot-reloading (for built executables)
 run_standalone :: proc(path: string) {
-	fmt.println("[STANDALONE] Running:", path)
+	log_info("[STANDALONE] Running: %s", path)
 	// TODO: Implement static game loading (no DLL)
 	// This would require the game to be compiled as a static library
 }
 
 // get_package fetches and installs an external package
 get_package :: proc(package_name: string) -> bool {
-	fmt.println("[PACKAGE] Fetching:", package_name)
+	log_info("[PACKAGE] Fetching: %s", package_name)
 	return package_manager_fetch(package_name)
 }

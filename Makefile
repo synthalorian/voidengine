@@ -20,12 +20,12 @@ ifeq ($(OS),Windows_NT)
     EXE_EXT := .exe
 endif
 
-.PHONY: all check engine main demo clean build-standalone build-linux build-windows build-macos
+.PHONY: all check engine main demo clean build-standalone build-linux build-windows build-macos test check-tests
 
 all: check
 
 # Check all packages for compilation errors
-check: check-engine check-main check-demo
+check: check-engine check-main check-demo check-tests
 	@echo "✅ All packages compile successfully"
 
 # Check the engine package (library, no entry point)
@@ -42,6 +42,34 @@ check-main:
 check-demo:
 	@echo "Checking demo game package..."
 	$(ODIN) check examples/demo/src/ $(ENGINE_COLLECTION) -no-entry-point
+
+# Check test packages compile
+check-tests:
+	@echo "Checking test packages..."
+	$(ODIN) check tests/test_math.odin $(ENGINE_COLLECTION) -file
+	$(ODIN) check tests/test_config.odin $(ENGINE_COLLECTION) -file
+	$(ODIN) check tests/test_log.odin $(ENGINE_COLLECTION) -file
+	$(ODIN) check tests/test_state.odin $(ENGINE_COLLECTION) -file
+
+# Build and run tests
+test: test-math test-config test-log test-state
+	@echo "✅ All tests passed"
+
+test-math:
+	@echo "Running math tests..."
+	$(ODIN) run tests/test_math.odin $(ENGINE_COLLECTION) -file
+
+test-config:
+	@echo "Running config tests..."
+	$(ODIN) run tests/test_config.odin $(ENGINE_COLLECTION) -file
+
+test-log:
+	@echo "Running log tests..."
+	$(ODIN) run tests/test_log.odin $(ENGINE_COLLECTION) -file
+
+test-state:
+	@echo "Running state tests..."
+	$(ODIN) run tests/test_state.odin $(ENGINE_COLLECTION) -file
 
 # Build the engine executable
 build:
