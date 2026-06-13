@@ -15,11 +15,11 @@ Born from the void. Built for immediacy. Hot-reload everything and watch your ga
 
 ```bash
 # Create a new game
-grid-engine new mygame
+voidengine new mygame
 cd mygame
 
 # Run it (hot-reload enabled)
-grid-engine run .
+voidengine run .
 
 # Edit src/game.odin, save, see changes instantly
 ```
@@ -64,7 +64,7 @@ engine.play_music(id: int)
 ## Building Standalone
 
 ```bash
-grid-engine build mygame/
+voidengine build mygame/
 # Produces: mygame-standalone (single binary)
 ```
 
@@ -72,7 +72,7 @@ grid-engine build mygame/
 
 ```
 ┌─────────────────────────────────────┐
-│           Grid Engine               │
+│           VoidEngine                │
 │  ┌─────────┐  ┌─────────┐          │
 │  │ Hot     │  │ Game    │          │
 │  │ Reload  │  │ DLL     │          │

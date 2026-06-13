@@ -20,3 +20,13 @@ Thumbs.db
 
 # Game assets cache
 assets/.cache/
+
+# AI session artifacts
+.claw/
+.clawd-todos.json
+.sandbox-home/
+.sandbox-tmp/
+
+# Build outputs
+src.bin
+voidengine

@@ -1,7 +1,7 @@
 # VoidEngine Build System
 # https://github.com/voidengine/voidengine
 
-ODIN_ROOT := /tmp/odin-setup/odin-linux-amd64-nightly+2026-05-03
+ODIN_ROOT := /tmp/odin-linux-amd64-nightly+2026-06-08
 ODIN := ODIN_ROOT=$(ODIN_ROOT) $(ODIN_ROOT)/odin
 ENGINE_COLLECTION := -collection:engine=src
 
