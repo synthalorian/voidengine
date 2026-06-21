@@ -39,7 +39,7 @@ Engine :: struct {
     // Hot reload
     game_dll: dynlib.Library,
     game_api: GameAPI,
-    last_dll_write_time: os.File_Time,
+    last_dll_write_time: time.Time,
     
     // Frame timing
     accumulator: f64,
@@ -57,8 +57,8 @@ GameAPI :: struct {
 
 // Input state tracking
 InputState :: struct {
-    keys: [SDL.NUM_SCANCODES]bool,
-    keys_prev: [SDL.NUM_SCANCODES]bool,
+    keys: [512]bool,
+    keys_prev: [512]bool,
     mouse_x: i32,
     mouse_y: i32,
     mouse_dx: i32,
@@ -155,7 +155,7 @@ engine_init :: proc(config: EngineConfig) -> ^Engine {
     engine.running = true
     engine.last_frame_time = f64(time.now()._nsec) / 1e9
     
-    fmt.println("🎮 VoidEngine initialized")
+    fmt.println("VoidEngine initialized")
     fmt.println("   Resolution:", config.width, "x", config.height)
     fmt.println("   Hot reload:", config.enable_hot_reload)
     
@@ -176,7 +176,7 @@ engine_shutdown :: proc(engine: ^Engine) {
     SDL.DestroyWindow(engine.window)
     SDL.Quit()
     
-    delete(engine)
+    free(engine)
     fmt.println("VoidEngine shutdown complete")
 }
 
@@ -198,7 +198,7 @@ engine_run :: proc(engine: ^Engine) {
         // Process input
         input_update_prev_state(&engine.input)
         
-        for SDL.PollEvent(&event) != 0 {
+        for SDL.PollEvent(&event) {
             if event.type == SDL.EventType.QUIT {
                 engine.running = false
             }
@@ -267,11 +267,11 @@ input_update_prev_state :: proc(input: ^InputState) {
 input_process_event :: proc(input: ^InputState, event: ^SDL.Event) {
     #partial switch event.type {
     case SDL.EventType.KEYDOWN:
-        if event.key.keysym.scancode < SDL.NUM_SCANCODES {
+        if u32(event.key.keysym.scancode) < u32(SDL.NUM_SCANCODES) {
             input.keys[event.key.keysym.scancode] = true
         }
     case SDL.EventType.KEYUP:
-        if event.key.keysym.scancode < SDL.NUM_SCANCODES {
+        if u32(event.key.keysym.scancode) < u32(SDL.NUM_SCANCODES) {
             input.keys[event.key.keysym.scancode] = false
         }
     case SDL.EventType.MOUSEMOTION:
@@ -291,14 +291,25 @@ input_process_event :: proc(input: ^InputState, event: ^SDL.Event) {
 }
 
 input_is_key_pressed :: proc(input: ^InputState, scancode: SDL.Scancode) -> bool {
-    return input.keys[scancode] && !input.keys_prev[scancode]
+    idx := int(scancode)
+    if idx < 0 || idx >= 512 {
+        return false
+    }
+    return input.keys[idx] && !input.keys_prev[idx]
 }
 
 input_is_key_held :: proc(input: ^InputState, scancode: SDL.Scancode) -> bool {
-    return input.keys[scancode]
+    idx := int(scancode)
+    if idx < 0 || idx >= 512 {
+        return false
+    }
+    return input.keys[idx]
 }
 
 input_is_mouse_pressed :: proc(input: ^InputState, button: u8) -> bool {
+    if button >= 8 {
+        return false
+    }
     return input.mouse_buttons[button] && !input.mouse_buttons_prev[button]
 }
 
@@ -309,16 +320,16 @@ engine_check_hot_reload :: proc(engine: ^Engine) {
     defer delete(dll_path)
     
     if os.exists(dll_path) {
-        stat, err := os.stat(dll_path)
-        if err == os.ERROR_NONE && stat.modification_time != engine.last_dll_write_time {
-            engine.last_dll_write_time = stat.modification_time
+        mod_time, err := os.modification_time_by_path(dll_path)
+        if err == nil && mod_time != engine.last_dll_write_time {
+            engine.last_dll_write_time = mod_time
             engine_reload_game_code(engine, dll_path)
         }
     }
 }
 
 engine_reload_game_code :: proc(engine: ^Engine, dll_path: string) {
-    fmt.println("🔄 Hot reloading game code...")
+    fmt.println("Hot reloading game code...")
     
     // Unload old DLL
     if engine.game_dll != nil {
@@ -341,7 +352,7 @@ engine_reload_game_code :: proc(engine: ^Engine, dll_path: string) {
     
     // Load symbols
     // Note: In real implementation, you'd use dynlib.symbol_address
-    fmt.println("✅ Game code reloaded")
+    fmt.println("Game code reloaded")
 }
 
 // Scene management helpers
@@ -365,7 +376,7 @@ scene_switch :: proc(engine: ^Engine, scene: ^Scene) {
         scene.init(scene)
     }
     
-    fmt.println("📽️  Switched to scene:", scene.name)
+    fmt.println("Switched to scene:", scene.name)
 }
 
 // Entity helpers

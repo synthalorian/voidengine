@@ -1,8 +1,9 @@
 package main
-
 import "core:fmt"
 import SDL "vendor:sdl2"
-import engine "../src/core"
+import engine "../../src/core"
+import "core:os"
+import "core:math/rand"
 
 // Shmup example — vertical scrolling shooter
 shmup_game :: struct {
@@ -72,10 +73,10 @@ main :: proc() {
     // Initialize starfield
     for i in 0..<100 {
         star := Star{
-            x = f32(os.random()) % f32(config.width),
-            y = f32(os.random()) % f32(config.height),
-            speed = 50.0 + f32(os.random()) % 150.0,
-            brightness = u8(100 + os.random() % 155),
+            x = rand.float32() * f32(config.width),
+            y = rand.float32() * f32(config.height),
+            speed = 50.0 + rand.float32() * 150.0,
+            brightness = u8(100 + rand.int_max(155)),
         }
         append(&game.stars, star)
     }
