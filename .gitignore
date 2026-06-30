@@ -1,0 +1,53 @@
+# VoidEngine
+# Build outputs
+*.so
+*.dll
+*.dylib
+*.bin
+*.exe
+shmup
+demo
+puzzle
+voidengine
+voidengine-test
+shmup-test
+demo-test
+puzzle-test
+
+# Odin artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# Assets generated during development
+assets/*.wav
+assets/*.mp3
+assets/*.ogg
+assets/*.png
+assets/*.jpg
+!assets/.gitkeep
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug / core dumps
+core
+core.*
+*.core
+
+# Temporary files
+*.tmp
+*.temp
+*.log

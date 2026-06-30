@@ -97,8 +97,12 @@ game_init :: proc(e: ^engine.Engine) {
     
     config := e.config
     
+    // Create scene for ECS first
+    scene := engine.scene_create(e, "shmup")
+    engine.scene_switch(e, scene)
+    
     // Create player ship
-    ship_entity := engine.entity_create(&e.scene.scenes[0])
+    ship_entity := engine.entity_create(scene)
     ship_transform := new(engine.Transform)
     ship_transform^ = engine.make_transform(f32(config.width) / 2, f32(config.height) - 60)
     ship_sprite := new(engine.Sprite)
@@ -150,10 +154,6 @@ game_init :: proc(e: ^engine.Engine) {
         }
         append(&game.stars, star)
     }
-    
-    // Create scene for ECS
-    scene := engine.scene_create(e, "shmup")
-    engine.scene_switch(e, scene)
     
     // Load placeholder sounds (will work if assets exist, silently fail otherwise)
     engine.audio_load_sound(&e.audio, "shoot", "assets/shoot.wav")
@@ -737,8 +737,8 @@ draw_ship :: proc(renderer: ^SDL.Renderer, x, y: f32, color: SDL.Color, shake_x,
     // Engine glow
     engine_color := engine.color(100, 200, 255, 200)
     SDL.SetRenderDrawColor(renderer, engine_color.r, engine_color.g, engine_color.b, engine_color.a)
-    SDL.RenderDrawLine(renderer, cx - 4, cy + 12, cx - 6, cy + 18 + rand.int_max(4))
-    SDL.RenderDrawLine(renderer, cx + 4, cy + 12, cx + 6, cy + 18 + rand.int_max(4))
+    SDL.RenderDrawLine(renderer, cx - 4, cy + 12, cx - 6, cy + 18 + i32(rand.int_max(4)))
+    SDL.RenderDrawLine(renderer, cx + 4, cy + 12, cx + 6, cy + 18 + i32(rand.int_max(4)))
 }
 
 draw_enemy :: proc(renderer: ^SDL.Renderer, x, y: f32, color: SDL.Color, pattern: EnemyPattern, shake_x, shake_y: i32) {
