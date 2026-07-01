@@ -81,10 +81,28 @@ voidengine/
 │   ├── demo/                # Basic input + shooting demo
 │   ├── shmup/               # Full vertical scrolling shooter
 │   └── puzzle/              # Match-3 puzzle with mouse input
+├── studio/                  # VoidEngine Studio (Tauri GUI)
+│   ├── src-tauri/           # Rust backend
+│   ├── src/                 # React frontend
+│   └── README.md
 ├── assets/                  # Sound effects (not included)
 ├── Makefile
 └── README.md
 ```
+
+---
+
+## VoidEngine Studio
+
+Want a GUI instead of the terminal? Use **VoidEngine Studio** — a Tauri + React desktop app for building and testing your games.
+
+```bash
+cd studio
+npm install
+npm run tauri:dev
+```
+
+Studio auto-detects VoidEngine projects, lets you run **Check / Test / Build All**, and gives you per-example **Build Example** / **Run Example** buttons with live output. See [`studio/README.md`](studio/README.md) for details.
 
 ---
 
