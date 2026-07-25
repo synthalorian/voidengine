@@ -50,7 +50,7 @@ collider_creation :: proc(t: ^testing.T) {
 
 @(test)
 entity_components :: proc(t: ^testing.T) {
-    scene := engine.Scene{entities = make([dynamic]engine.Entity)}
+    scene := engine.Scene{entities = make([dynamic]^engine.Entity)}
     defer engine.scene_cleanup(&scene)
 
     entity := engine.entity_create(&scene)
@@ -67,7 +67,7 @@ entity_components :: proc(t: ^testing.T) {
 
 @test
 entities_collide_overlap :: proc(t: ^testing.T) {
-    scene := engine.Scene{entities = make([dynamic]engine.Entity)}
+    scene := engine.Scene{entities = make([dynamic]^engine.Entity)}
     defer engine.scene_cleanup(&scene)
 
     a := engine.entity_create(&scene)
@@ -91,7 +91,7 @@ entities_collide_overlap :: proc(t: ^testing.T) {
 
 @(test)
 entities_no_collide_separated :: proc(t: ^testing.T) {
-    scene := engine.Scene{entities = make([dynamic]engine.Entity)}
+    scene := engine.Scene{entities = make([dynamic]^engine.Entity)}
     defer engine.scene_cleanup(&scene)
 
     a := engine.entity_create(&scene)
@@ -111,6 +111,33 @@ entities_no_collide_separated :: proc(t: ^testing.T) {
     engine.entity_add_component(b, engine.Collider, cb)
 
     testing.expect(t, !engine.entities_collide(a, b), "separated entities should not collide")
+}
+
+@(test)
+entity_pointers_stay_valid :: proc(t: ^testing.T) {
+    // Regression: entity_create used to return pointers into a dynamic
+    // array of values — appending more entities could realloc and
+    // invalidate previously returned pointers.
+    scene := engine.Scene{entities = make([dynamic]^engine.Entity)}
+    defer engine.scene_cleanup(&scene)
+
+    first := engine.entity_create(&scene)
+    first_id := first.id
+
+    // Force many reallocs of the backing array
+    for i in 0..<256 {
+        engine.entity_create(&scene)
+    }
+
+    testing.expect(t, first.id == first_id, "first entity pointer must stay valid after growth")
+    testing.expect(t, first.active, "first entity must still be active")
+
+    transform := new(engine.Transform)
+    transform^ = engine.make_transform(42.0, 0.0)
+    engine.entity_add_component(first, engine.Transform, transform)
+    retrieved := engine.entity_get_component(first, engine.Transform)
+    testing.expect(t, retrieved != nil && retrieved.position.x == 42.0,
+        "components on early entity must survive array growth")
 }
 
 @(test)

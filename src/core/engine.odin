@@ -96,7 +96,7 @@ Scene :: struct {
     update: proc(^Scene, f64),
     render: proc(^Scene, ^SDL.Renderer),
     shutdown: proc(^Scene),
-    entities: [dynamic]Entity,
+    entities: [dynamic]^Entity,
     engine: ^Engine,
 }
 
@@ -488,7 +488,7 @@ scene_create :: proc(engine: ^Engine, name: string) -> ^Scene {
     scene := new(Scene)
     scene.name = name
     scene.engine = engine
-    scene.entities = make([dynamic]Entity)
+    scene.entities = make([dynamic]^Entity)
     append(&engine.scene.scenes, scene)
     return scene
 }
@@ -511,13 +511,14 @@ scene_switch :: proc(engine: ^Engine, scene: ^Scene) {
 // Entity Helpers
 // ============================================================================
 entity_create :: proc(scene: ^Scene) -> ^Entity {
-    entity := Entity{
-        id = u64(len(scene.entities)),
-        active = true,
-        components = make(map[typeid]rawptr),
-    }
+    // Heap-allocated so the returned pointer stays valid forever —
+    // appending more entities can never realloc-move existing ones.
+    entity := new(Entity)
+    entity.id = u64(len(scene.entities))
+    entity.active = true
+    entity.components = make(map[typeid]rawptr)
     append(&scene.entities, entity)
-    return &scene.entities[len(scene.entities) - 1]
+    return entity
 }
 
 // entity_add_component attaches a component to an entity.
@@ -558,8 +559,9 @@ scene_cleanup :: proc(scene: ^Scene) {
     if scene == nil {
         return
     }
-    for i in 0..<len(scene.entities) {
-        entity_destroy(scene, &scene.entities[i])
+    for entity in scene.entities {
+        entity_destroy(scene, entity)
+        free(entity)
     }
     delete(scene.entities)
     scene.entities = nil
@@ -626,12 +628,12 @@ make_collider :: proc(width, height: f32, layer: CollisionLayer, mask: Collision
 // Update positions based on velocity
 physics_update :: proc(scene: ^Scene, dt: f64) {
     dt_f32 := f32(dt)
-    for &entity in scene.entities {
+    for entity in scene.entities {
         if !entity.active {
             continue
         }
-        transform := entity_get_component(&entity, Transform)
-        velocity := entity_get_component(&entity, Velocity)
+        transform := entity_get_component(entity, Transform)
+        velocity := entity_get_component(entity, Velocity)
         if transform != nil && velocity != nil {
             transform.position.x += velocity.linear.x * dt_f32
             transform.position.y += velocity.linear.y * dt_f32
@@ -675,12 +677,12 @@ find_collisions :: proc(scene: ^Scene, allocator := context.allocator) -> [][2]^
     
     count := len(scene.entities)
     for i in 0..<count {
-        a := &scene.entities[i]
+        a := scene.entities[i]
         if !a.active {
             continue
         }
         for j in i + 1..<count {
-            b := &scene.entities[j]
+            b := scene.entities[j]
             if !b.active {
                 continue
             }

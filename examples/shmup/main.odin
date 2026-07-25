@@ -212,7 +212,7 @@ game_update :: proc(e: ^engine.Engine, dt: f64) {
     game.ship.velocity.linear.y = move_y * game.ship.speed
     
     // Clamp to screen
-    ship_entity := &e.scene.current_scene.entities[0]
+    ship_entity := e.scene.current_scene.entities[0]
     engine.clamp_to_screen(ship_entity, config.width, config.height)
     
     // Shooting
