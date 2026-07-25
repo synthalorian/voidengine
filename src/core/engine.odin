@@ -240,6 +240,12 @@ engine_shutdown :: proc(engine: ^Engine) {
     
     audio_shutdown(&engine.audio)
     
+    // Tear down all scenes (frees entities, components, scene structs)
+    for len(engine.scene.scenes) > 0 {
+        scene_destroy(engine.scene.scenes[len(engine.scene.scenes) - 1])
+    }
+    delete(engine.scene.scenes)
+    
     SDL.DestroyRenderer(engine.renderer)
     SDL.DestroyWindow(engine.window)
     SDL.Quit()
@@ -514,6 +520,10 @@ entity_create :: proc(scene: ^Scene) -> ^Entity {
     return &scene.entities[len(scene.entities) - 1]
 }
 
+// entity_add_component attaches a component to an entity.
+// OWNERSHIP: the engine takes ownership of `component` — it must be
+// heap-allocated (e.g. via `new(T)`) and will be freed by entity_destroy
+// or scene_destroy. Do not free it yourself after adding.
 entity_add_component :: proc(entity: ^Entity, $T: typeid, component: ^T) {
     entity.components[T] = component
 }
@@ -525,9 +535,52 @@ entity_get_component :: proc(entity: ^Entity, $T: typeid) -> ^T {
     return nil
 }
 
+// entity_destroy frees all components owned by the entity, deletes the
+// component map, and marks the entity inactive. The entity slot stays in
+// scene.entities so existing pointers into the array remain stable.
+// Safe to call multiple times.
 entity_destroy :: proc(scene: ^Scene, entity: ^Entity) {
+    if entity == nil || !entity.active {
+        return
+    }
+    for _, component in entity.components {
+        free(component)
+    }
+    delete(entity.components)
+    entity.components = nil
     entity.active = false
-    // In a real engine, queue for cleanup at end of frame
+}
+
+// scene_cleanup destroys every entity and frees the entities array.
+// Works for stack-allocated scenes (e.g. tests) — does NOT free the
+// Scene struct itself or unregister it from the engine.
+scene_cleanup :: proc(scene: ^Scene) {
+    if scene == nil {
+        return
+    }
+    for i in 0..<len(scene.entities) {
+        entity_destroy(scene, &scene.entities[i])
+    }
+    delete(scene.entities)
+    scene.entities = nil
+}
+
+// scene_destroy fully tears down a scene created by scene_create:
+// cleans up entities, unregisters from the engine, frees the Scene.
+scene_destroy :: proc(scene: ^Scene) {
+    if scene == nil {
+        return
+    }
+    scene_cleanup(scene)
+    if scene.engine != nil {
+        for s, i in scene.engine.scene.scenes {
+            if s == scene {
+                unordered_remove(&scene.engine.scene.scenes, i)
+                break
+            }
+        }
+    }
+    free(scene)
 }
 
 // ============================================================================

@@ -4,7 +4,7 @@
 ODIN := odin
 OUT_DIR := .
 
-.PHONY: all build check test clean run run-demo run-puzzle
+.PHONY: all build shmup demo puzzle shared check test clean run run-demo run-puzzle
 
 all: build
 

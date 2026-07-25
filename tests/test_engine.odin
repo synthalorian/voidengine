@@ -51,7 +51,7 @@ collider_creation :: proc(t: ^testing.T) {
 @(test)
 entity_components :: proc(t: ^testing.T) {
     scene := engine.Scene{entities = make([dynamic]engine.Entity)}
-    defer delete(scene.entities)
+    defer engine.scene_cleanup(&scene)
 
     entity := engine.entity_create(&scene)
     testing.expect(t, entity != nil, "entity should be created")
@@ -63,14 +63,12 @@ entity_components :: proc(t: ^testing.T) {
     retrieved := engine.entity_get_component(entity, engine.Transform)
     testing.expect(t, retrieved != nil, "component should be retrievable")
     testing.expect(t, retrieved.position.x == 5.0, "retrieved x should match")
-
-    free(transform)
 }
 
 @test
 entities_collide_overlap :: proc(t: ^testing.T) {
     scene := engine.Scene{entities = make([dynamic]engine.Entity)}
-    defer delete(scene.entities)
+    defer engine.scene_cleanup(&scene)
 
     a := engine.entity_create(&scene)
     ta := new(engine.Transform)
@@ -89,15 +87,12 @@ entities_collide_overlap :: proc(t: ^testing.T) {
     engine.entity_add_component(b, engine.Collider, cb)
 
     testing.expect(t, engine.entities_collide(a, b), "overlapping entities should collide")
-
-    free(ta); free(ca)
-    free(tb); free(cb)
 }
 
 @(test)
 entities_no_collide_separated :: proc(t: ^testing.T) {
     scene := engine.Scene{entities = make([dynamic]engine.Entity)}
-    defer delete(scene.entities)
+    defer engine.scene_cleanup(&scene)
 
     a := engine.entity_create(&scene)
     ta := new(engine.Transform)
@@ -116,9 +111,6 @@ entities_no_collide_separated :: proc(t: ^testing.T) {
     engine.entity_add_component(b, engine.Collider, cb)
 
     testing.expect(t, !engine.entities_collide(a, b), "separated entities should not collide")
-
-    free(ta); free(ca)
-    free(tb); free(cb)
 }
 
 @(test)
