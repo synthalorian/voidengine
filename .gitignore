@@ -1,18 +1,18 @@
 # VoidEngine
-# Build outputs
+# Build outputs (root-level binaries only — must not swallow examples/ dirs)
 *.so
 *.dll
 *.dylib
 *.bin
 *.exe
-shmup
-demo
-puzzle
-voidengine
-voidengine-test
-shmup-test
-demo-test
-puzzle-test
+/shmup
+/demo
+/puzzle
+/voidengine
+/voidengine-test
+/shmup-test
+/demo-test
+/puzzle-test
 
 # Odin artifacts
 *.o

@@ -14,8 +14,12 @@ shmup_game :: struct {
     ship: Ship,
     bullets: [dynamic]Bullet,
     enemies: [dynamic]Enemy_ship,
-    particles: [dynamic]Particle,
     stars: [dynamic]Star,
+    // v0.4 engine systems
+    trail_emitter: ^engine.ParticleEmitter,
+    fx_emitter: ^engine.ParticleEmitter,
+    ship_anim: ^engine.Animation,
+    enemy_tex: ^SDL.Texture,
     score: i32,
     wave: i32,
     lives: i32,
@@ -70,15 +74,6 @@ EnemyPattern :: enum {
     boss,
 }
 
-Particle :: struct {
-    x, y: f32,
-    vx, vy: f32,
-    life: f32,
-    max_life: f32,
-    size: f32,
-    color: SDL.Color,
-}
-
 Star :: struct {
     x: f32,
     y: f32,
@@ -106,7 +101,7 @@ game_init :: proc(e: ^engine.Engine) {
     ship_transform := new(engine.Transform)
     ship_transform^ = engine.make_transform(f32(config.width) / 2, f32(config.height) - 60)
     ship_sprite := new(engine.Sprite)
-    ship_sprite^ = engine.make_sprite(32, 32, engine.color(0, 200, 255, 255))
+    ship_sprite^ = engine.make_sprite(32, 32, engine.color(255, 255, 255, 255))
     ship_velocity := new(engine.Velocity)
     ship_velocity^ = engine.make_velocity(0, 0)
     ship_collider := new(engine.Collider)
@@ -117,6 +112,51 @@ game_init :: proc(e: ^engine.Engine) {
     engine.entity_add_component(ship_entity, engine.Sprite, ship_sprite)
     engine.entity_add_component(ship_entity, engine.Velocity, ship_velocity)
     engine.entity_add_component(ship_entity, engine.Collider, ship_collider)
+    
+    // Textures (fall back to colored rects if assets are missing)
+    ship_tex := engine.texture_load(e, "ship", "assets/ship_sheet.png")
+    game_enemy_tex := engine.texture_load(e, "enemy", "assets/enemy_sheet.png")
+    if ship_tex != nil {
+        ship_sprite.texture = ship_tex
+    } else {
+        ship_sprite.color = engine.color(0, 200, 255, 255) // legacy cyan fallback
+    }
+    
+    // Ship flame animation (2 frames from the sheet)
+    ship_anim := new(engine.Animation)
+    anim_frames := make([]i32, 2)
+    anim_frames[0] = 0
+    anim_frames[1] = 1
+    ship_anim^ = engine.make_animation(32, 32, 2, anim_frames, 0.12, true)
+    engine.entity_add_component(ship_entity, engine.Animation, ship_anim)
+    
+    // Engine trail emitter attached to the ship (follows its Transform)
+    trail := new(engine.ParticleEmitter)
+    trail^ = engine.make_particle_emitter(90, 256)
+    trail.offset = {0, 18}
+    trail.angle_min = math.PI / 2 - 0.35  // downward cone
+    trail.angle_max = math.PI / 2 + 0.35
+    trail.speed_min = 60
+    trail.speed_max = 140
+    trail.lifetime_min = 0.15
+    trail.lifetime_max = 0.35
+    trail.size_start = 5
+    trail.size_end = 1
+    trail.color_start = engine.color(0, 220, 255, 220)
+    trail.color_end = engine.color(255, 0, 255, 0)
+    engine.entity_add_component(ship_entity, engine.ParticleEmitter, trail)
+    
+    // FX emitter entity for explosion bursts
+    fx_entity := engine.entity_create(scene)
+    fx := new(engine.ParticleEmitter)
+    fx^ = engine.make_particle_emitter(0, 512) // bursts only
+    fx.speed_min = 50
+    fx.speed_max = 220
+    fx.lifetime_min = 0.3
+    fx.lifetime_max = 0.8
+    fx.size_start = 5
+    fx.size_end = 1
+    engine.entity_add_component(fx_entity, engine.ParticleEmitter, fx)
     
     game.ship = Ship{
         transform = ship_transform,
@@ -131,8 +171,11 @@ game_init :: proc(e: ^engine.Engine) {
     
     game.bullets = make([dynamic]Bullet)
     game.enemies = make([dynamic]Enemy_ship)
-    game.particles = make([dynamic]Particle)
     game.stars = make([dynamic]Star)
+    game.trail_emitter = trail
+    game.fx_emitter = fx
+    game.ship_anim = ship_anim
+    game.enemy_tex = game_enemy_tex
     game.lives = 3
     game.score = 0
     game.wave = 1
@@ -173,6 +216,11 @@ game_update :: proc(e: ^engine.Engine, dt: f64) {
     dt_f32 := f32(dt)
     config := e.config
     
+    // Engine v0.4 systems always tick (even on the game-over screen,
+    // so explosions finish playing out)
+    engine.particle_update(e.scene.current_scene, dt)
+    engine.animation_update(e.scene.current_scene, dt)
+    
     if game.game_over {
         if engine.input_is_key_pressed(&e.input, SDL.Scancode.R) {
             restart_game(e, game)
@@ -184,6 +232,10 @@ game_update :: proc(e: ^engine.Engine, dt: f64) {
     if game.ship.invulnerable > 0 {
         game.ship.invulnerable -= dt_f32
         game.invuln_flash += dt_f32 * 10
+        // Blink the ship via texture alpha modulation
+        game.ship.sprite.color.a = int(game.invuln_flash) % 2 == 0 ? 255 : 70
+    } else {
+        game.ship.sprite.color.a = 255
     }
     
     // Player movement
@@ -303,17 +355,6 @@ game_update :: proc(e: ^engine.Engine, dt: f64) {
         }
     }
     
-    // Update particles
-    for i := len(game.particles) - 1; i >= 0; i -= 1 {
-        particle := &game.particles[i]
-        particle.x += particle.vx * dt_f32
-        particle.y += particle.vy * dt_f32
-        particle.life -= dt_f32
-        if particle.life <= 0 {
-            unordered_remove(&game.particles, i)
-        }
-    }
-    
     // Collision detection
     check_collisions(e, game)
     
@@ -358,10 +399,9 @@ game_render :: proc(e: ^engine.Engine, renderer: ^SDL.Renderer) {
         }
     }
     
-    // Draw player ship (with invulnerability flash)
-    if game.ship.invulnerable <= 0 || int(game.invuln_flash) % 2 == 0 {
-        draw_ship(renderer, game.ship.transform.position.x, game.ship.transform.position.y, 
-            game.ship.sprite.color, shake_x, shake_y)
+    // Draw player ship (textured + animated; alpha-blinks while invulnerable)
+    if !game.game_over {
+        engine.sprite_render(e.scene.current_scene, renderer)
     }
     
     // Draw bullets
@@ -379,27 +419,40 @@ game_render :: proc(e: ^engine.Engine, renderer: ^SDL.Renderer) {
         }
     }
     
-    // Draw enemies
+    // Draw enemies (textured when the sheet loaded, vector fallback otherwise)
     for enemy in game.enemies {
         if !enemy.active {
             continue
         }
-        draw_enemy(renderer, enemy.transform.position.x, enemy.transform.position.y, 
-            enemy.sprite.color, enemy.pattern, shake_x, shake_y)
+        if game.enemy_tex != nil {
+            // 2-frame pulse animation driven by the pattern timer
+            frame := i32(int(enemy.pattern_timer * 8) % 2)
+            src := SDL.Rect{x = frame * 32, y = 0, w = 32, h = 32}
+            w := enemy.sprite.width
+            h := enemy.sprite.height
+            dst := SDL.Rect{
+                x = i32(enemy.transform.position.x) - w / 2 + shake_x,
+                y = i32(enemy.transform.position.y) - h / 2 + shake_y,
+                w = w,
+                h = h,
+            }
+            c := enemy.sprite.color
+            SDL.SetTextureColorMod(game.enemy_tex, c.r, c.g, c.b)
+            SDL.RenderCopy(renderer, game.enemy_tex, &src, &dst)
+            if enemy.pattern == .boss {
+                cx := i32(enemy.transform.position.x) + shake_x
+                cy := i32(enemy.transform.position.y) + shake_y
+                SDL.SetRenderDrawColor(renderer, 255, 0, 0, 255)
+                SDL.RenderDrawLine(renderer, cx - 20, cy - 35, cx - 20 + 40 * enemy.health / 10, cy - 35)
+            }
+        } else {
+            draw_enemy(renderer, enemy.transform.position.x, enemy.transform.position.y, 
+                enemy.sprite.color, enemy.pattern, shake_x, shake_y)
+        }
     }
     
-    // Draw particles
-    for particle in game.particles {
-        alpha := u8(255 * (particle.life / particle.max_life))
-        col := particle.color
-        col.a = alpha
-        size := i32(particle.size * (particle.life / particle.max_life))
-        if size < 1 {
-            size = 1
-        }
-        engine.draw_rect(renderer, i32(particle.x - f32(size)/2) + shake_x, 
-            i32(particle.y - f32(size)/2) + shake_y, size, size, col)
-    }
+    // Draw engine particles (trail + explosions)
+    engine.particle_render(e.scene.current_scene, renderer)
     
     // HUD
     draw_hud(renderer, game, config.width, config.height)
@@ -419,8 +472,19 @@ game_shutdown :: proc(e: ^engine.Engine) {
     
     delete(game.bullets)
     delete(game.enemies)
-    delete(game.particles)
     delete(game.stars)
+    
+    // Engine frees the emitter structs during scene teardown,
+    // but their particle arrays are ours to release
+    if game.trail_emitter != nil {
+        engine.particle_emitter_destroy(game.trail_emitter)
+    }
+    if game.fx_emitter != nil {
+        engine.particle_emitter_destroy(game.fx_emitter)
+    }
+    if game.ship_anim != nil {
+        delete(game.ship_anim.frames)
+    }
     free(game)
     
     fmt.println("Shmup example shutdown")
@@ -545,21 +609,13 @@ spawn_enemy :: proc(e: ^engine.Engine, game: ^shmup_game) {
 }
 
 spawn_explosion :: proc(game: ^shmup_game, x, y: f32, color: SDL.Color, count: int) {
-    for i in 0..<count {
-        angle := rand.float32() * 6.28
-        speed := 50 + rand.float32() * 150
-        particle := Particle{
-            x = x,
-            y = y,
-            vx = math.cos(angle) * speed,
-            vy = math.sin(angle) * speed,
-            life = 0.3 + rand.float32() * 0.5,
-            max_life = 0.3 + rand.float32() * 0.5,
-            size = 2 + rand.float32() * 4,
-            color = color,
-        }
-        append(&game.particles, particle)
+    if game.fx_emitter == nil {
+        return
     }
+    // Tint the burst with the victim's color, fading to dark + transparent
+    game.fx_emitter.color_start = color
+    game.fx_emitter.color_end = SDL.Color{color.r / 3, color.g / 6, 0, 0}
+    engine.particle_burst(game.fx_emitter, {x, y}, count)
 }
 
 // ============================================================================
@@ -668,6 +724,9 @@ player_hit :: proc(e: ^engine.Engine, game: ^shmup_game) {
     
     if game.lives <= 0 {
         game.game_over = true
+        if game.trail_emitter != nil {
+            game.trail_emitter.emitting = false
+        }
         if game.score > game.high_score {
             game.high_score = game.score
         }
@@ -687,6 +746,10 @@ cleanup_entities :: proc(e: ^engine.Engine, game: ^shmup_game) {
     // Remove inactive bullets
     for i := len(game.bullets) - 1; i >= 0; i -= 1 {
         if !game.bullets[i].active {
+            free(game.bullets[i].transform)
+            free(game.bullets[i].sprite)
+            free(game.bullets[i].velocity)
+            free(game.bullets[i].collider)
             unordered_remove(&game.bullets, i)
         }
     }
@@ -694,6 +757,10 @@ cleanup_entities :: proc(e: ^engine.Engine, game: ^shmup_game) {
     // Remove inactive enemies
     for i := len(game.enemies) - 1; i >= 0; i -= 1 {
         if !game.enemies[i].active {
+            free(game.enemies[i].transform)
+            free(game.enemies[i].sprite)
+            free(game.enemies[i].velocity)
+            free(game.enemies[i].collider)
             unordered_remove(&game.enemies, i)
         }
     }
@@ -714,9 +781,23 @@ restart_game :: proc(e: ^engine.Engine, game: ^shmup_game) {
     game.ship.transform.position.x = f32(e.config.width) / 2
     game.ship.transform.position.y = f32(e.config.height) - 60
     
+    // Free components of everything still on the field
+    for bullet in game.bullets {
+        free(bullet.transform); free(bullet.sprite); free(bullet.velocity); free(bullet.collider)
+    }
+    for enemy in game.enemies {
+        free(enemy.transform); free(enemy.sprite); free(enemy.velocity); free(enemy.collider)
+    }
     clear(&game.bullets)
     clear(&game.enemies)
-    clear(&game.particles)
+    
+    if game.trail_emitter != nil {
+        clear(&game.trail_emitter.particles)
+        game.trail_emitter.emitting = true
+    }
+    if game.fx_emitter != nil {
+        clear(&game.fx_emitter.particles)
+    }
 }
 
 // ============================================================================
