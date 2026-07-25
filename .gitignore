@@ -30,6 +30,8 @@ assets/*.ogg
 assets/*.png
 assets/*.jpg
 !assets/.gitkeep
+# Shmup sprite sheets are versioned so the game runs textured out-of-the-box
+!examples/shmup/assets/*.png
 
 # IDE / editor
 .vscode/
