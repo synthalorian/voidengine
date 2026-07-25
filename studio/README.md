@@ -5,7 +5,7 @@ A Tauri v2 + React desktop GUI for building and testing games made with **VoidEn
 ## What it does
 
 - Automatically discovers VoidEngine projects (looks for `src/core`, `examples`, and `Makefile`)
-- One-click **Check**, **Test**, **Build All**, **Clean**
+- One-click **Check**, **Test**, **Build All**, **Build Shared** (`voidengine.so`), **Clean**
 - Per-example **Build Example** and **Run Example** buttons
 - Live command output in a built-in terminal panel
 - Add any VoidEngine project folder via file picker
@@ -39,7 +39,7 @@ The built bundle will be in `src-tauri/target/release/bundle/`.
 ## Usage
 
 1. Launch the app
-2. It should auto-detect `~/projects/active/voidengine`
+2. It auto-detects VoidEngine projects under `~/Projects/*/*` (and `~/projects/*/*`) by looking for the engine signature (`src/core/` + `examples/` + `Makefile`) — e.g. `~/Projects/active/voidengine`
 3. Select a project in the sidebar
 4. Click **Check** / **Test** / **Build All** or pick an example and click **Build Example** / **Run Example**
 

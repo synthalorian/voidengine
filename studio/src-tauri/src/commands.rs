@@ -159,14 +159,55 @@ pub fn discover_projects_in_parent(path: String) -> Result<Vec<ProjectInfo>, Str
     Ok(projects)
 }
 
+/// Strict VoidEngine signature: src/core + examples + Makefile all present.
+fn has_voidengine_signature(path: &std::path::Path) -> bool {
+    path.join("src/core").is_dir()
+        && path.join("examples").is_dir()
+        && path.join("Makefile").exists()
+}
+
 #[tauri::command]
 pub fn get_default_projects() -> Result<Vec<ProjectInfo>, String> {
-    let default_paths = vec![PathBuf::from(
-        "/home/synth/projects/active/voidengine",
-    )];
+    let mut projects: Vec<ProjectInfo> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
 
-    let mut projects = Vec::new();
-    for path in default_paths {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Ok(projects);
+    };
+
+    // Direct candidates — Linux is case-sensitive, so check both casings.
+    let mut candidates = vec![
+        home.join("Projects/active/voidengine"),
+        home.join("projects/active/voidengine"),
+    ];
+
+    // Search ~/Projects/*/* and ~/projects/*/* for the VoidEngine signature
+    // (src/core + examples + Makefile).
+    for base in [home.join("Projects"), home.join("projects")] {
+        if let Ok(level1) = std::fs::read_dir(&base) {
+            for e1 in level1.flatten() {
+                let p1 = e1.path();
+                if !p1.is_dir() {
+                    continue;
+                }
+                if let Ok(level2) = std::fs::read_dir(&p1) {
+                    for e2 in level2.flatten() {
+                        let p2 = e2.path();
+                        if p2.is_dir() && has_voidengine_signature(&p2) {
+                            candidates.push(p2);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for path in candidates {
+        let key = path.to_string_lossy().to_string();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
         if let Ok(Some(project)) = scan_project(path) {
             projects.push(project);
         }

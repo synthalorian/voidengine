@@ -82,13 +82,20 @@ function App() {
     }
   };
 
-  const build = () => run("make build");
+  const build = () => run("make all");
+  const buildShared = () => run("make shared");
   const check = () => run("make check");
   const test = () => run("make test");
   const clean = () => run("make clean");
   const runGame = () => {
     if (!selectedExample) return;
-    run(`./${selectedExample}`);
+    // Run targets from the engine Makefile build then launch the example.
+    const runTargets: Record<string, string> = {
+      shmup: "make run",
+      demo: "make run-demo",
+      puzzle: "make run-puzzle",
+    };
+    run(runTargets[selectedExample] ?? `make ${selectedExample} && ./${selectedExample}`);
   };
   const buildExample = () => {
     if (!selectedExample) return;
@@ -151,6 +158,9 @@ function App() {
           </button>
           <button onClick={build} disabled={running || !selectedProject}>
             Build All
+          </button>
+          <button onClick={buildShared} disabled={running || !selectedProject}>
+            Build Shared
           </button>
           <button onClick={clean} disabled={running || !selectedProject}>
             Clean
