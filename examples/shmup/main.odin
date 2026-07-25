@@ -114,8 +114,9 @@ game_init :: proc(e: ^engine.Engine) {
     engine.entity_add_component(ship_entity, engine.Collider, ship_collider)
     
     // Textures (fall back to colored rects if assets are missing)
-    ship_tex := engine.texture_load(e, "ship", "assets/ship_sheet.png")
-    game_enemy_tex := engine.texture_load(e, "enemy", "assets/enemy_sheet.png")
+    // Versioned sheets (run from repo root via `make run`)
+    ship_tex := engine.texture_load(e, "ship", "examples/shmup/assets/ship_sheet.png")
+    game_enemy_tex := engine.texture_load(e, "enemy", "examples/shmup/assets/enemy_sheet.png")
     if ship_tex != nil {
         ship_sprite.texture = ship_tex
     } else {
