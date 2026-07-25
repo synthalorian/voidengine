@@ -41,6 +41,7 @@ Engine :: struct {
     input: InputState,
     scene: SceneManager,
     audio: AudioEngine,
+    textures: TextureManager,
     
     // Hot reload
     game_dll: dynlib.Library,
@@ -118,12 +119,15 @@ Transform :: struct {
     scale: linalg.Vector2f32,
 }
 
-// Sprite rendering info
+// Sprite rendering info.
+// If texture is nil the sprite renders as a filled colored rect.
+// color doubles as RGBA modulation for textured sprites.
 Sprite :: struct {
     color: SDL.Color,
     width: i32,
     height: i32,
-    // If we had textures: texture: ^SDL.Texture
+    texture: ^SDL.Texture,
+    flip: SDL.RendererFlip,
 }
 
 // 2D linear velocity
@@ -216,6 +220,9 @@ engine_init :: proc(config: EngineConfig) -> ^Engine {
     // Initialize audio
     audio_init(&engine.audio)
     
+    // Initialize texture manager
+    texture_manager_init(&engine.textures, engine.renderer)
+    
     engine.running = true
     engine.last_frame_time = f64(time.now()._nsec) / 1e9
     
@@ -245,6 +252,8 @@ engine_shutdown :: proc(engine: ^Engine) {
         scene_destroy(engine.scene.scenes[len(engine.scene.scenes) - 1])
     }
     delete(engine.scene.scenes)
+    
+    texture_manager_shutdown(&engine.textures)
     
     SDL.DestroyRenderer(engine.renderer)
     SDL.DestroyWindow(engine.window)

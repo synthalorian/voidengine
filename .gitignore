@@ -43,8 +43,8 @@ assets/*.jpg
 Thumbs.db
 
 # Debug / core dumps
-core
-core.*
+/core
+/core.*
 *.core
 
 # Temporary files

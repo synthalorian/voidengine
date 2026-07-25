@@ -14,6 +14,10 @@ A lightweight 2D game engine with hot-reload, ECS, physics, and audio. Built wit
 - **2D Physics & Collision** — velocity-based movement, AABB collision, layer/mask filtering
 - **Audio System** — SDL_mixer integration for WAV sound effects and music
 - **Scene Management** — switch scenes with init/update/render/shutdown lifecycle
+- **Textures & Sprites** — PNG/JPG texture loading with caching, color modulation, flip/rotation
+- **Animation** — sprite-sheet frame animation with looping and one-shot modes
+- **Tilemaps** — grid maps with CSV loading, solid-tile collision, tileset rendering
+- **Particles** — emitter component with bursts, rate emission, gravity, color/size lerp
 - **Fixed Timestep** — deterministic 60 Hz update loop
 - **Input Handling** — keyboard, mouse, and gamepad support
 - **Math Helpers** — `vec2`, `vec3`, `color`, `lerp`, `clamp`, `rand_range`
@@ -24,10 +28,10 @@ A lightweight 2D game engine with hot-reload, ECS, physics, and audio. Built wit
 
 ```bash
 # Arch Linux
-sudo pacman -S sdl2 sdl2_mixer
+sudo pacman -S sdl2 sdl2_mixer sdl2_image
 ```
 
-Other distros: install `libsdl2` and `SDL2_mixer` development packages.
+Other distros: install `libsdl2`, `SDL2_mixer`, and `SDL2_image` development packages.
 
 ---
 
