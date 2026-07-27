@@ -81,6 +81,12 @@ InputState :: struct {
     mouse_dy: i32,
     mouse_buttons: [8]bool,
     mouse_buttons_prev: [8]bool,
+    // gamepad (first connected controller, hot-polled each frame)
+    pad: ^SDL.GameController,
+    pad_buttons: [15]bool,
+    pad_prev: [15]bool,
+    pad_lx: f32,
+    pad_ly: f32,
 }
 
 // ============================================================================
@@ -187,7 +193,7 @@ engine_init :: proc(config: EngineConfig) -> ^Engine {
     }
 
     // Initialize SDL
-    if SDL.Init(SDL.INIT_VIDEO | SDL.INIT_AUDIO | SDL.INIT_TIMER) != 0 {
+    if SDL.Init(SDL.INIT_VIDEO | SDL.INIT_AUDIO | SDL.INIT_TIMER | SDL.INIT_GAMECONTROLLER) != 0 {
         fmt.eprintln("SDL_Init failed:", SDL.GetError())
         os.exit(1)
     }
@@ -223,6 +229,17 @@ engine_init :: proc(config: EngineConfig) -> ^Engine {
     
     // Initialize input
     engine.input = InputState{}
+
+    // first connected gamepad, if any
+    for i in 0 ..< SDL.NumJoysticks() {
+        if SDL.IsGameController(i) {
+            engine.input.pad = SDL.GameControllerOpen(i)
+            if engine.input.pad != nil {
+                fmt.println("Gamepad connected:", SDL.GameControllerName(engine.input.pad))
+            }
+            break
+        }
+    }
     
     // Initialize scene manager
     engine.scene = SceneManager{
@@ -298,6 +315,7 @@ engine_run :: proc(engine: ^Engine) {
         
         // Process input
         input_update_prev_state(&engine.input)
+        input_poll_pad(&engine.input)
         
         for SDL.PollEvent(&event) {
             if event.type == SDL.EventType.QUIT {
@@ -365,6 +383,38 @@ input_update_prev_state :: proc(input: ^InputState) {
     input.mouse_buttons_prev = input.mouse_buttons
     input.mouse_dx = 0
     input.mouse_dy = 0
+    input.pad_prev = input.pad_buttons
+}
+
+PAD_DEADZONE :: 0.25
+
+// hot-poll the pad once per frame (call after input_update_prev_state)
+input_poll_pad :: proc(input: ^InputState) {
+    if input.pad == nil do return
+    for b in 0 ..< 15 {
+        input.pad_buttons[b] = SDL.GameControllerGetButton(input.pad, SDL.GameControllerButton(b)) != 0
+    }
+    DEAD :: 8000
+    ax := SDL.GameControllerGetAxis(input.pad, .LEFTX)
+    ay := SDL.GameControllerGetAxis(input.pad, .LEFTY)
+    input.pad_lx = abs(i32(ax)) > DEAD ? f32(ax) / 32767 : 0
+    input.pad_ly = abs(i32(ay)) > DEAD ? f32(ay) / 32767 : 0
+}
+
+input_pad_held :: proc(input: ^InputState, button: SDL.GameControllerButton) -> bool {
+    idx := int(button)
+    if idx < 0 || idx >= 15 do return false
+    return input.pad_buttons[idx]
+}
+
+input_pad_pressed :: proc(input: ^InputState, button: SDL.GameControllerButton) -> bool {
+    idx := int(button)
+    if idx < 0 || idx >= 15 do return false
+    return input.pad_buttons[idx] && !input.pad_prev[idx]
+}
+
+input_pad_move :: proc(input: ^InputState) -> (x, y: f32) {
+    return input.pad_lx, input.pad_ly
 }
 
 input_process_event :: proc(input: ^InputState, event: ^SDL.Event) {
