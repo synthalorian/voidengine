@@ -22,6 +22,8 @@ EngineConfig :: struct {
     target_fps: f64,
     enable_hot_reload: bool,
     asset_path: string,
+    // Wayland app_id / desktop-file id (for taskbar icon association); may be empty
+    app_id: string,
     // Linux shared library path for hot reload
     game_so_path: string,
 }
@@ -178,6 +180,12 @@ engine_init :: proc(config: EngineConfig) -> ^Engine {
     engine.config = config
     engine.fixed_timestep = 1.0 / 60.0
     
+    // Set the app id (Wayland app_id via sdl2-compat -> SDL3) so the window
+    // associates with its .desktop entry on Linux. Must be set before SDL.Init.
+    if config.app_id != "" {
+        SDL.SetHint("SDL_APP_ID", strings.clone_to_cstring(config.app_id))
+    }
+
     // Initialize SDL
     if SDL.Init(SDL.INIT_VIDEO | SDL.INIT_AUDIO | SDL.INIT_TIMER) != 0 {
         fmt.eprintln("SDL_Init failed:", SDL.GetError())

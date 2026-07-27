@@ -80,6 +80,7 @@ main :: proc() {
         target_fps = 60.0,
         enable_hot_reload = false,
         asset_path = "assets",
+        app_id = "voidengine-puzzle",
     }
 
     e := engine.engine_init(config)

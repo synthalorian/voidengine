@@ -955,6 +955,7 @@ main :: proc() {
         target_fps = 60.0,
         enable_hot_reload = true,
         asset_path = "assets",
+        app_id = "voidengine-shmup",
         game_so_path = "",
     }
     

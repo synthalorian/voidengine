@@ -45,6 +45,7 @@ main :: proc() {
         target_fps = 60.0,
         enable_hot_reload = true,
         asset_path = "assets",
+        app_id = "voidengine-demo",
     }
 
     e := engine.engine_init(config)
