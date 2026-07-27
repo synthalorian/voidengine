@@ -216,6 +216,10 @@ engine_init :: proc(config: EngineConfig) -> ^Engine {
         fmt.eprintln("SDL_CreateRenderer failed:", SDL.GetError())
         os.exit(1)
     }
+
+    // Enable alpha blending so draw_rect alpha (HUD panels, overlays,
+    // particles) actually blends instead of rendering opaque.
+    SDL.SetRenderDrawBlendMode(engine.renderer, .BLEND)
     
     // Initialize input
     engine.input = InputState{}
