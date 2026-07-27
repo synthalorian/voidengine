@@ -276,7 +276,11 @@ engine_shutdown :: proc(engine: ^Engine) {
 // ============================================================================
 engine_run :: proc(engine: ^Engine) {
     event: SDL.Event
-    
+
+    if engine.game_api.init != nil {
+        engine.game_api.init(engine)
+    }
+
     for engine.running {
         // Calculate delta time
         current_time := f64(time.now()._nsec) / 1e9
