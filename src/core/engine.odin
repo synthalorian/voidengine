@@ -171,6 +171,7 @@ CollisionMask :: bit_set[CollisionLayer]
 AudioEngine :: struct {
     initialized: bool,
     master_volume: f32,
+    sfx_volume: f32,
     // Loaded sounds and music
     sounds: map[string]^MIX.Chunk,
     music: map[string]^MIX.Music,
@@ -808,6 +809,7 @@ audio_init :: proc(audio: ^AudioEngine) {
     
     audio.initialized = true
     audio.master_volume = 1.0
+    audio.sfx_volume = 1.0
     audio.sounds = make(map[string]^MIX.Chunk)
     audio.music = make(map[string]^MIX.Music)
     
@@ -904,6 +906,14 @@ audio_set_master_volume :: proc(audio: ^AudioEngine, volume: f32) {
     audio.master_volume = clamp(volume, 0.0, 1.0)
     if audio.initialized {
         MIX.VolumeMusic(i32(audio.master_volume * 128))
+    }
+}
+
+// SFX volume — applies to all mixer channels (-1 = every channel)
+audio_set_sfx_volume :: proc(audio: ^AudioEngine, volume: f32) {
+    audio.sfx_volume = clamp(volume, 0.0, 1.0)
+    if audio.initialized {
+        MIX.Volume(-1, i32(audio.sfx_volume * 128))
     }
 }
 
