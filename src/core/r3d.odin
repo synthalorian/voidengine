@@ -1,0 +1,206 @@
+package voidengine
+
+// ============================================================================
+// r3d — shared 3D sprite rendering core (backend-agnostic)
+//
+// Used by both the OpenGL (gl3d) and Vulkan (vk3d) backends. Contains the
+// camera model, light model, billboard math, and the GPU instance layout that
+// both backends upload to the vertex stage.
+//
+// Design: sprites are 3D quads. The CPU resolves each sprite into a world
+// space basis (right/up vectors, scaled and rotated) so the vertex shader is
+// trivial and identical across backends.
+// ============================================================================
+
+import "core:math"
+import "core:math/linalg"
+
+R3D_MAX_LIGHTS :: 16
+
+// How a sprite quad orients itself in 3D space.
+R3D_Billboard :: enum i32 {
+    Spherical,   // fully camera-facing (classic billboard)
+    Cylindrical, // camera-facing around the world Y axis only (trees, characters)
+    FlatXZ,      // horizontal quad in world space (floors, ground decals), normal +Y
+    FlatXY,      // vertical quad in world space (walls, backdrop), normal +Z
+}
+
+R3D_Camera :: struct {
+    position: linalg.Vector3f32,
+    yaw:      f32, // radians; 0 looks down -Z, positive turns toward +X
+    pitch:    f32, // radians; positive looks up
+    fov_y:    f32, // radians
+    near_z:   f32,
+    far_z:    f32,
+}
+
+// Point light. color is linear HDR intensity (values > 1 feed bloom).
+R3D_Light :: struct {
+    position: linalg.Vector3f32,
+    color:    linalg.Vector3f32,
+    radius:   f32, // attenuation range; intensity falls to 0 at this distance
+}
+
+R3D_Sprite_Options :: struct {
+    color:         linalg.Vector4f32, // RGBA tint (linear-ish; multiplies texture)
+    rotation:      f32,               // in-plane rotation, radians
+    uv_rect:       linalg.Vector4f32, // u, v, u_size, v_size (atlas subrect or tiling)
+    spec_strength: f32,               // Blinn-Phong specular multiplier
+    shininess:     f32,               // specular exponent
+    emissive:      f32,               // self-illumination multiplier (feeds bloom)
+    billboard:     R3D_Billboard,
+}
+
+r3d_default_sprite_options :: proc "contextless" () -> R3D_Sprite_Options {
+    return R3D_Sprite_Options{
+        color         = {1, 1, 1, 1},
+        rotation      = 0,
+        uv_rect       = {0, 0, 1, 1},
+        spec_strength = 0.5,
+        shininess     = 32,
+        emissive      = 0,
+        billboard     = .Spherical,
+    }
+}
+
+// GPU instance layout — uploaded verbatim as per-instance vertex attributes.
+// Stride is 96 bytes; attribute offsets are shared by both backends.
+R3D_Instance :: struct {
+    origin:  linalg.Vector3f32, // world center
+    right:   linalg.Vector3f32, // world right basis, scaled by width
+    up:      linalg.Vector3f32, // world up basis, scaled by height
+    normal:  linalg.Vector3f32, // geometric normal (pre normal-map)
+    uv_rect: linalg.Vector4f32,
+    color:   linalg.Vector4f32,
+    params:  linalg.Vector4f32, // x: spec_strength, y: shininess, z: emissive, w: unused
+}
+
+R3D_INSTANCE_STRIDE :: size_of(R3D_Instance) // 96
+
+// Frame uniforms — std140-compatible, bound as a UBO on both backends.
+R3D_Frame_Uniforms :: struct {
+    view_proj:   linalg.Matrix4f32,
+    camera_pos:  linalg.Vector4f32, // xyz = position
+    ambient:     linalg.Vector4f32, // rgb = ambient light
+    light_pos:   [R3D_MAX_LIGHTS]linalg.Vector4f32,   // xyz = pos, w = radius
+    light_color: [R3D_MAX_LIGHTS]linalg.Vector4f32,   // rgb = HDR intensity
+    meta:        linalg.Vector4f32, // x = num_lights
+}
+
+// Camera basis vectors from yaw/pitch (no roll).
+// yaw=0, pitch=0 -> right=(1,0,0), up=(0,1,0), forward=(0,0,-1)
+r3d_camera_basis :: proc "contextless" (cam: ^R3D_Camera) -> (right, up, forward: linalg.Vector3f32) {
+    cp := math.cos(cam.pitch)
+    sp := math.sin(cam.pitch)
+    cy := math.cos(cam.yaw)
+    sy := math.sin(cam.yaw)
+    forward = {cp * sy, sp, -cp * cy}
+    right   = {cy, 0, sy}
+    up      = linalg.normalize(linalg.cross(right, forward))
+    return
+}
+
+// Resolve a sprite into a GPU instance: billboard orientation, in-plane
+// rotation, and scale baked into the right/up basis vectors.
+r3d_make_instance :: proc "contextless" (
+    cam:  ^R3D_Camera,
+    pos:  linalg.Vector3f32,
+    size: linalg.Vector2f32,
+    opts: R3D_Sprite_Options,
+) -> (inst: R3D_Instance) {
+    right, up: linalg.Vector3f32
+
+    cam_right, cam_up, _ := r3d_camera_basis(cam)
+
+    switch opts.billboard {
+    case .Spherical:
+        right = cam_right
+        up    = cam_up
+    case .Cylindrical:
+        // Face the camera, but stay upright on the world Y axis.
+        to_cam := cam.position - pos
+        to_cam.y = 0
+        len_xz := linalg.length(to_cam)
+        facing: linalg.Vector3f32 = {0, 0, 1}
+        if len_xz > 1e-5 {
+            facing = to_cam / len_xz
+        }
+        right = linalg.normalize(linalg.cross(linalg.Vector3f32{0, 1, 0}, facing))
+        up    = {0, 1, 0}
+    case .FlatXZ:
+        // up = -Z so that cross(right, up) = +Y (floor lit from above)
+        right = {1, 0, 0}
+        up    = {0, 0, -1}
+    case .FlatXY:
+        right = {1, 0, 0}
+        up    = {0, 1, 0}
+    }
+
+    // In-plane rotation: rotate the basis within its own plane.
+    c := math.cos(opts.rotation)
+    s := math.sin(opts.rotation)
+    r2 := right * c + up * s
+    u2 := up * c - right * s
+
+    inst.origin  = pos
+    inst.right   = r2 * size.x
+    inst.up      = u2 * size.y
+    inst.normal  = linalg.normalize(linalg.cross(r2, u2))
+    inst.uv_rect = opts.uv_rect
+    inst.color   = opts.color
+    inst.params  = {opts.spec_strength, opts.shininess, opts.emissive, 0}
+    return
+}
+
+// Right-handed perspective projection, OpenGL clip conventions
+// (camera looks down -Z, NDC z in [-1, 1]).
+r3d_perspective_gl :: proc "contextless" (fov_y, aspect, near_z, far_z: f32) -> (m: linalg.Matrix4f32) {
+    f := 1.0 / math.tan(0.5 * fov_y)
+    m[0, 0] = f / aspect
+    m[1, 1] = f
+    m[2, 2] = (far_z + near_z) / (near_z - far_z)
+    m[3, 2] = -1
+    m[2, 3] = 2 * far_z * near_z / (near_z - far_z)
+    return
+}
+
+// Right-handed perspective projection, Vulkan clip conventions
+// (camera looks down -Z, NDC z in [0, 1], Y flipped to match GL orientation).
+r3d_perspective_vk :: proc "contextless" (fov_y, aspect, near_z, far_z: f32) -> (m: linalg.Matrix4f32) {
+    f := 1.0 / math.tan(0.5 * fov_y)
+    m[0, 0] = f / aspect
+    m[1, 1] = -f
+    m[2, 2] = far_z / (near_z - far_z)
+    m[3, 2] = -1
+    m[2, 3] = far_z * near_z / (near_z - far_z)
+    return
+}
+
+// View-projection matrix for the given camera and backend clip conventions.
+r3d_camera_view_proj :: proc "contextless" (cam: ^R3D_Camera, aspect: f32, vulkan: bool) -> linalg.Matrix4f32 {
+    _, _, forward := r3d_camera_basis(cam)
+    view := linalg.matrix4_look_at(cam.position, cam.position + forward, linalg.Vector3f32{0, 1, 0})
+    proj := vulkan ? r3d_perspective_vk(cam.fov_y, aspect, cam.near_z, cam.far_z) :
+                     r3d_perspective_gl(cam.fov_y, aspect, cam.near_z, cam.far_z)
+    return proj * view
+}
+
+// Fill a frame-uniform block from scene state.
+r3d_make_frame_uniforms :: proc "contextless" (
+    cam:       ^R3D_Camera,
+    aspect:    f32,
+    vulkan:    bool,
+    ambient:   linalg.Vector3f32,
+    lights:    []R3D_Light,
+) -> (u: R3D_Frame_Uniforms) {
+    u.view_proj  = r3d_camera_view_proj(cam, aspect, vulkan)
+    u.camera_pos = {cam.position.x, cam.position.y, cam.position.z, 0}
+    u.ambient    = {ambient.x, ambient.y, ambient.z, 0}
+    n := min(len(lights), R3D_MAX_LIGHTS)
+    for i in 0 ..< n {
+        u.light_pos[i]   = {lights[i].position.x, lights[i].position.y, lights[i].position.z, lights[i].radius}
+        u.light_color[i] = {lights[i].color.x, lights[i].color.y, lights[i].color.z, 0}
+    }
+    u.meta = {f32(n), 0, 0, 0}
+    return
+}

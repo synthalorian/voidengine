@@ -26,6 +26,14 @@ EngineConfig :: struct {
     app_id: string,
     // Linux shared library path for hot reload
     game_so_path: string,
+    // OpenGL 3.3 core mode (unlocks the gl3d renderer: lit/normal-mapped 3D
+    // billboards, HDR + bloom). When true, no SDL_Renderer is created and
+    // render callbacks receive nil for the renderer argument.
+    use_opengl: bool,
+    gl_vsync:   i32, // 0 = off, anything else = on
+    // Vulkan mode (unlocks the vk3d renderer, same feature set as gl3d).
+    // Game code is responsible for initializing vk3d against engine.window.
+    use_vulkan: bool,
 }
 
 // ============================================================================
@@ -44,6 +52,12 @@ Engine :: struct {
     scene: SceneManager,
     audio: AudioEngine,
     textures: TextureManager,
+    
+    // OpenGL (when config.use_opengl)
+    gl_context: SDL.GLContext,
+    gl_enabled: bool,
+    // Vulkan (when config.use_vulkan; context owned by game code)
+    vk_enabled: bool,
     
     // Hot reload
     game_dll: dynlib.Library,
@@ -200,33 +214,60 @@ engine_init :: proc(config: EngineConfig) -> ^Engine {
     }
     
     // Create window
+    window_flags := SDL.WINDOW_SHOWN | SDL.WINDOW_RESIZABLE
+    if config.use_opengl {
+        SDL.GL_SetAttribute(.CONTEXT_MAJOR_VERSION, 3)
+        SDL.GL_SetAttribute(.CONTEXT_MINOR_VERSION, 3)
+        SDL.GL_SetAttribute(.CONTEXT_PROFILE_MASK, i32(SDL.GLprofile.CORE))
+        SDL.GL_SetAttribute(.DOUBLEBUFFER, 1)
+        SDL.GL_SetAttribute(.DEPTH_SIZE, 24)
+        window_flags |= SDL.WINDOW_OPENGL
+    } else if config.use_vulkan {
+        window_flags |= SDL.WINDOW_VULKAN
+    }
     engine.window = SDL.CreateWindow(
         strings.clone_to_cstring(config.title),
         SDL.WINDOWPOS_CENTERED,
         SDL.WINDOWPOS_CENTERED,
         config.width,
         config.height,
-        SDL.WINDOW_SHOWN | SDL.WINDOW_RESIZABLE,
+        window_flags,
     )
     if engine.window == nil {
         fmt.eprintln("SDL_CreateWindow failed:", SDL.GetError())
         os.exit(1)
     }
     
-    // Create renderer
-    engine.renderer = SDL.CreateRenderer(
-        engine.window,
-        -1,
-        SDL.RENDERER_ACCELERATED | SDL.RENDERER_PRESENTVSYNC,
-    )
-    if engine.renderer == nil {
-        fmt.eprintln("SDL_CreateRenderer failed:", SDL.GetError())
-        os.exit(1)
+    if config.use_opengl {
+        engine.gl_context = SDL.GL_CreateContext(engine.window)
+        if engine.gl_context == nil {
+            fmt.eprintln("SDL_GL_CreateContext failed:", SDL.GetError())
+            os.exit(1)
+        }
+        SDL.GL_MakeCurrent(engine.window, engine.gl_context)
+        SDL.GL_SetSwapInterval(config.gl_vsync == 0 ? 0 : 1)
+        gl3d_load_gl_procs()
+        engine.gl_enabled = true
+    } else if config.use_vulkan {
+        engine.vk_enabled = true
     }
+    
+    // Create renderer (2D/SDL mode only; gl3d/vk3d games render via GPU APIs)
+    if !engine.gl_enabled && !engine.vk_enabled {
+        engine.renderer = SDL.CreateRenderer(
+            engine.window,
+            -1,
+            SDL.RENDERER_ACCELERATED | SDL.RENDERER_PRESENTVSYNC,
+        )
+        if engine.renderer == nil {
+            fmt.eprintln("SDL_CreateRenderer failed:", SDL.GetError())
+            os.exit(1)
+        }
 
-    // Enable alpha blending so draw_rect alpha (HUD panels, overlays,
-    // particles) actually blends instead of rendering opaque.
-    SDL.SetRenderDrawBlendMode(engine.renderer, .BLEND)
+        // Enable alpha blending so draw_rect alpha (HUD panels, overlays,
+        // particles) actually blends instead of rendering opaque.
+        SDL.SetRenderDrawBlendMode(engine.renderer, .BLEND)
+    }
     
     // Initialize input
     engine.input = InputState{}
@@ -285,7 +326,11 @@ engine_shutdown :: proc(engine: ^Engine) {
     
     texture_manager_shutdown(&engine.textures)
     
-    SDL.DestroyRenderer(engine.renderer)
+    if engine.gl_enabled {
+        SDL.GL_DeleteContext(engine.gl_context)
+    } else {
+        SDL.DestroyRenderer(engine.renderer)
+    }
     SDL.DestroyWindow(engine.window)
     SDL.Quit()
     
@@ -353,18 +398,31 @@ engine_run :: proc(engine: ^Engine) {
         }
         
         // Render
-        SDL.SetRenderDrawColor(engine.renderer, 20, 20, 30, 255)
-        SDL.RenderClear(engine.renderer)
-        
-        if engine.game_api.render != nil {
-            engine.game_api.render(engine, engine.renderer)
+        if engine.gl_enabled {
+            // GL mode: game code renders via the gl3d module; engine only swaps.
+            if engine.game_api.render != nil {
+                engine.game_api.render(engine, nil)
+            }
+            SDL.GL_SwapWindow(engine.window)
+        } else if engine.vk_enabled {
+            // Vulkan mode: game code renders AND presents via vk3d.
+            if engine.game_api.render != nil {
+                engine.game_api.render(engine, nil)
+            }
+        } else {
+            SDL.SetRenderDrawColor(engine.renderer, 20, 20, 30, 255)
+            SDL.RenderClear(engine.renderer)
+            
+            if engine.game_api.render != nil {
+                engine.game_api.render(engine, engine.renderer)
+            }
+            
+            if engine.scene.current_scene != nil && engine.scene.current_scene.render != nil {
+                engine.scene.current_scene.render(engine.scene.current_scene, engine.renderer)
+            }
+            
+            SDL.RenderPresent(engine.renderer)
         }
-        
-        if engine.scene.current_scene != nil && engine.scene.current_scene.render != nil {
-            engine.scene.current_scene.render(engine.scene.current_scene, engine.renderer)
-        }
-        
-        SDL.RenderPresent(engine.renderer)
         
         // Frame rate limiting
         frame_time := f64(time.now()._nsec) / 1e9 - current_time

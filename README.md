@@ -1,8 +1,10 @@
 # VoidEngine 🎮🌌
 
-A lightweight 2D game engine with hot-reload, ECS, physics, and audio. Built with **Odin** + **SDL2**.
+A lightweight game engine with hot-reload, ECS, physics, audio — and now a
+3D sprite renderer with **OpenGL 3.3** and **Vulkan** backends. Built with
+**Odin** + **SDL2**.
 
-> **Version:** v0.3.0  
+> **Version:** v0.5.0  
 > **Status:** playable demos, test suite passing, ship-ready
 
 ---
@@ -21,6 +23,19 @@ A lightweight 2D game engine with hot-reload, ECS, physics, and audio. Built wit
 - **Fixed Timestep** — deterministic 60 Hz update loop
 - **Input Handling** — keyboard, mouse, and gamepad support
 - **Math Helpers** — `vec2`, `vec3`, `color`, `lerp`, `clamp`, `rand_range`
+
+### 3D sprite rendering (v0.5.0 — gl3d / vk3d)
+
+Two interchangeable backends behind the same API (`src/core/r3d.odin` shared
+core, `gl3d.odin` OpenGL 3.3 core, `vk3d.odin` Vulkan):
+
+- **3D billboards** — spherical, cylindrical (Y-locked), and flat floor/wall quads
+- **Normal-mapped sprites** — 2D art lit like 3D geometry (Blinn-Phong, TBN)
+- **HDR point lights** — up to 16 per frame, distance-attenuated, HDR intensities
+- **Post-processing** — bright pass → separable gaussian blur → bloom, filmic
+  tonemap, vignette, gamma correction
+- **Instanced batching** — one draw call per texture batch
+- **Specular + emissive** per sprite; emissive feeds the bloom chain
 
 ---
 
@@ -48,6 +63,7 @@ make
 make shmup
 make demo
 make puzzle
+make void3d          # 3D sprite showcase (compiles SPIR-V shaders too)
 
 # Build the engine as a shared library (for hot-reload games)
 make shared
@@ -171,6 +187,21 @@ Set `enable_hot_reload = true` and `game_so_path = "path/to/game.so"`. The engin
 | **demo** | Basic movement, shooting, collision | WASD / Arrows + Space |
 | **shmup** | Full game with waves, particles, screen shake | WASD / Arrows + Space + R |
 | **puzzle** | Match-3 with mouse, swapping, cascades | Mouse click + Space |
+| **void3d** | 3D sprite showcase: lit billboards, normal maps, bloom | Arrows + B (bloom) + +/- (exposure) |
+
+### void3d
+
+```bash
+make run-void3d        # OpenGL backend
+make run-void3d-vk     # Vulkan backend
+make bench-void3d      # 600-frame benchmark on both backends
+./void3d --backend gl --shot /tmp/shot.ppm   # screenshot (GL)
+```
+
+Assets (sprites + normal maps) are procedurally generated:
+`python3 examples/void3d/tools/gen_assets.py` (requires Pillow).
+Vulkan shaders live in `src/core/shaders/` and compile to SPIR-V via
+`make vk-shaders` (requires `glslc` from the glslang/shaderc toolchain).
 
 ---
 
@@ -214,10 +245,13 @@ The test suite covers config creation, component helpers, entity creation, colli
 - [x] Hot reload on Linux
 - [x] Working examples (demo, shmup, puzzle)
 - [x] Unit tests
-- [ ] Texture / sprite batch rendering
-- [ ] Tilemap / level loader
-- [ ] Gamepad support
+- [x] Texture / sprite batch rendering
+- [x] Tilemap / level loader
+- [x] Gamepad support
+- [x] 3D sprite renderer: OpenGL 3.3 backend (gl3d)
+- [x] 3D sprite renderer: Vulkan backend (vk3d)
 - [ ] Windows / macOS hot reload
+- [ ] 3D mesh rendering (gl3d/vk3d extension)
 
 ---
 
