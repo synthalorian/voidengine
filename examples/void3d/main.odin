@@ -23,6 +23,7 @@ package main
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import "core:math/linalg"
 import SDL "vendor:sdl2"
@@ -233,7 +234,7 @@ game_init :: proc(e: ^ve.Engine) {
 
     g.cam = ve.R3D_Camera{
         position = {9, 3.2, 0},
-        fov_y    = math.to_radians(60.0),
+        fov_y    = 60.0 * f32(math.RAD_PER_DEG),
         near_z   = 0.1,
         far_z    = 100.0,
     }
@@ -488,7 +489,8 @@ main :: proc() {
     shot := ""
 
     args := os.args
-    for i in 1 ..< len(args) {
+    i := 1
+    for i < len(args) {
         arg := args[i]
         switch {
         case arg == "--backend" && i + 1 < len(args):
@@ -498,11 +500,12 @@ main :: proc() {
             }
         case arg == "--bench" && i + 1 < len(args):
             i += 1
-            fmt.sscanf(args[i], "%d", &bench)
+            bench, _ = strconv.parse_int(args[i])
         case arg == "--shot" && i + 1 < len(args):
             i += 1
             shot = args[i]
         }
+        i += 1
     }
 
     config := ve.EngineConfig{
