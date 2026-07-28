@@ -41,6 +41,7 @@ GL3D_Renderer :: struct {
     bright_prog:        u32,
     blur_prog:          u32,
     composite_prog:     u32,
+    mesh_prog:          u32,
 
     // geometry
     vao:                u32,
@@ -333,6 +334,7 @@ gl3d_init :: proc(width, height: i32) -> ^GL3D_Renderer {
     if !ok { return nil }
     r.composite_prog, ok = gl3d_build_program(GL3D_POST_VERT, GL3D_COMPOSITE_FRAG)
     if !ok { return nil }
+    if !gl3d_init_mesh_pipeline(r) { return nil }
 
     // UBO: frame uniforms at binding point 0 in both sprite programs
     gl.GenBuffers(1, &r.ubo)
@@ -521,6 +523,7 @@ gl3d_shutdown :: proc(r: ^GL3D_Renderer) {
     gl.DeleteProgram(r.bright_prog)
     gl.DeleteProgram(r.blur_prog)
     gl.DeleteProgram(r.composite_prog)
+    gl.DeleteProgram(r.mesh_prog)
     delete(r.instances)
     delete(r.lights)
     free(r)
@@ -542,6 +545,7 @@ gl3d_upload_texture :: proc(pixels: []u8, w, h: i32, repeat := false) -> u32 {
     wrap: i32 = repeat ? gl.REPEAT : gl.CLAMP_TO_EDGE
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap)
+    gl.TexParameterf(gl.TEXTURE_2D, gl.TEXTURE_MAX_ANISOTROPY, 8)
     gl.GenerateMipmap(gl.TEXTURE_2D)
     return tex
 }
@@ -744,4 +748,192 @@ gl3d_end_frame :: proc(r: ^GL3D_Renderer) {
 gl3d_read_screen :: proc(r: ^GL3D_Renderer, pixels: []u8) {
     gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
     gl.ReadPixels(0, 0, r.width, r.height, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(pixels))
+}
+
+// ----------------------------------------------------------------------------
+// Meshes
+// ----------------------------------------------------------------------------
+
+GL3D_MESH_VERT :: `#version 330 core
+layout(location=0) in vec3 a_pos;
+layout(location=1) in vec3 a_normal;
+layout(location=2) in vec2 a_uv;
+
+layout(std140) uniform Frame {
+    mat4 u_view_proj;
+    vec4 u_camera_pos;
+    vec4 u_ambient;
+    vec4 u_light_pos[16];
+    vec4 u_light_color[16];
+    vec4 u_meta;
+};
+
+uniform mat4 u_model;
+uniform vec4 u_color;
+uniform vec4 u_params;    // spec_strength, shininess, emissive, -
+uniform vec2 u_uv_tiling;
+
+out vec2 v_uv;
+out vec3 v_world;
+out vec3 v_normal;
+out vec4 v_color;
+out vec4 v_params;
+
+void main() {
+    vec4 world = u_model * vec4(a_pos, 1.0);
+    v_world  = world.xyz;
+    v_normal = normalize(mat3(u_model) * a_normal);  // ok for rotation/uniform scale
+    v_uv     = a_uv * u_uv_tiling;
+    v_color  = u_color;
+    v_params = u_params;
+    gl_Position = u_view_proj * world;
+}
+`
+
+GL3D_MESH_FRAG :: `#version 330 core
+in vec2 v_uv;
+in vec3 v_world;
+in vec3 v_normal;
+in vec4 v_color;
+in vec4 v_params;
+
+uniform sampler2D u_diffuse;
+uniform int u_has_texture;
+
+layout(std140) uniform Frame {
+    mat4 u_view_proj;
+    vec4 u_camera_pos;
+    vec4 u_ambient;
+    vec4 u_light_pos[16];
+    vec4 u_light_color[16];
+    vec4 u_meta;
+};
+
+out vec4 frag_color;
+
+void main() {
+    vec4 base = v_color;
+    if (u_has_texture == 1) {
+        base *= texture(u_diffuse, v_uv);
+    }
+    if (base.a < 0.5) discard;
+
+    vec3 N = normalize(v_normal);
+    vec3 V = normalize(u_camera_pos.xyz - v_world);
+    float spec_strength = v_params.x;
+    float shininess     = v_params.y;
+    float emissive      = v_params.z;
+
+    vec3 diffuse_acc = u_ambient.rgb;
+    vec3 spec_acc    = vec3(0.0);
+    int num_lights = int(u_meta.x);
+    for (int i = 0; i < num_lights; ++i) {
+        vec3  lv     = u_light_pos[i].xyz - v_world;
+        float dist   = length(lv);
+        vec3  L      = lv / max(dist, 1e-4);
+        float radius = max(u_light_pos[i].w, 1e-4);
+        float att    = clamp(1.0 - dist / radius, 0.0, 1.0);
+        att *= att;
+        vec3 lc = u_light_color[i].rgb;
+        diffuse_acc += lc * max(dot(N, L), 0.0) * att;
+        vec3 H = normalize(L + V);
+        spec_acc += lc * pow(max(dot(N, H), 0.0), shininess) * att;
+    }
+
+    vec3 lit = base.rgb * diffuse_acc;
+    lit += spec_acc * spec_strength;
+    lit += base.rgb * emissive;
+    frag_color = vec4(lit, base.a);
+}
+`
+
+GL3D_Mesh :: struct {
+    vao:         u32,
+    vbo:         u32,
+    ebo:         u32,
+    index_count: i32,
+}
+
+// Upload mesh data to the GPU. Indices are u32.
+gl3d_upload_mesh :: proc(data: ^R3D_Mesh_Data) -> GL3D_Mesh {
+    mesh: GL3D_Mesh
+    mesh.index_count = i32(len(data.indices))
+
+    gl.GenVertexArrays(1, &mesh.vao)
+    gl.BindVertexArray(mesh.vao)
+
+    gl.GenBuffers(1, &mesh.vbo)
+    gl.BindBuffer(gl.ARRAY_BUFFER, mesh.vbo)
+    gl.BufferData(gl.ARRAY_BUFFER, len(data.vertices) * R3D_VERTEX_STRIDE, raw_data(data.vertices), gl.STATIC_DRAW)
+
+    gl.GenBuffers(1, &mesh.ebo)
+    gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ebo)
+    gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(data.indices) * size_of(u32), raw_data(data.indices), gl.STATIC_DRAW)
+
+    gl.EnableVertexAttribArray(0)
+    gl.VertexAttribPointer(0, 3, gl.FLOAT, false, R3D_VERTEX_STRIDE, offset_of(R3D_Vertex, pos))
+    gl.EnableVertexAttribArray(1)
+    gl.VertexAttribPointer(1, 3, gl.FLOAT, false, R3D_VERTEX_STRIDE, offset_of(R3D_Vertex, normal))
+    gl.EnableVertexAttribArray(2)
+    gl.VertexAttribPointer(2, 2, gl.FLOAT, false, R3D_VERTEX_STRIDE, offset_of(R3D_Vertex, uv))
+    gl.BindVertexArray(0)
+    return mesh
+}
+
+gl3d_destroy_mesh :: proc(mesh: ^GL3D_Mesh) {
+    gl.DeleteBuffers(1, &mesh.vbo)
+    gl.DeleteBuffers(1, &mesh.ebo)
+    gl.DeleteVertexArrays(1, &mesh.vao)
+    mesh^ = {}
+}
+
+// Draw a mesh immediately (depth-tested against sprites; texture may be 0
+// for flat color). model is the full model matrix.
+gl3d_draw_mesh_opts :: proc(r: ^GL3D_Renderer, mesh: ^GL3D_Mesh, texture: u32, model: linalg.Matrix4f32, opts: R3D_Mesh_Options) {
+    if mesh.index_count == 0 { return }
+    gl3d_flush(r)  // keep sprite batches in submission order
+
+    gl.UseProgram(r.mesh_prog)
+
+    aspect := f32(r.width) / f32(max(r.height, 1))
+    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:])
+    gl.BindBuffer(gl.UNIFORM_BUFFER, r.ubo)
+    gl.BufferSubData(gl.UNIFORM_BUFFER, 0, size_of(R3D_Frame_Uniforms), &uniforms)
+
+    m := model
+    gl.UniformMatrix4fv(gl.GetUniformLocation(r.mesh_prog, "u_model"), 1, false, &m[0][0])
+    color := opts.color
+    gl.Uniform4f(gl.GetUniformLocation(r.mesh_prog, "u_color"), color.x, color.y, color.z, color.w)
+    gl.Uniform4f(gl.GetUniformLocation(r.mesh_prog, "u_params"), opts.spec_strength, opts.shininess, opts.emissive, 0)
+    gl.Uniform2f(gl.GetUniformLocation(r.mesh_prog, "u_uv_tiling"), opts.uv_tiling.x, opts.uv_tiling.y)
+    gl.Uniform1i(gl.GetUniformLocation(r.mesh_prog, "u_has_texture"), texture != 0 ? 1 : 0)
+    gl.Uniform1i(gl.GetUniformLocation(r.mesh_prog, "u_diffuse"), 0)
+
+    gl.ActiveTexture(gl.TEXTURE0)
+    gl.BindTexture(gl.TEXTURE_2D, texture)
+
+    gl.BindVertexArray(mesh.vao)
+    gl.DrawElements(gl.TRIANGLES, mesh.index_count, gl.UNSIGNED_INT, nil)
+    gl.BindVertexArray(0)
+}
+
+// Draw a mesh with default options.
+gl3d_draw_mesh :: proc(r: ^GL3D_Renderer, mesh: ^GL3D_Mesh, texture: u32, model: linalg.Matrix4f32) {
+    gl3d_draw_mesh_opts(r, mesh, texture, model, r3d_default_mesh_options())
+}
+
+// Init the mesh program (called from gl3d_init).
+@(private)
+gl3d_init_mesh_pipeline :: proc(r: ^GL3D_Renderer) -> bool {
+    prog, ok := gl3d_build_program(GL3D_MESH_VERT, GL3D_MESH_FRAG)
+    if !ok {
+        fmt.eprintln("gl3d: mesh program failed")
+        return false
+    }
+    r.mesh_prog = prog
+    block_idx := gl.GetUniformBlockIndex(r.mesh_prog, "Frame")
+    if block_idx != gl.INVALID_INDEX {
+        gl.UniformBlockBinding(r.mesh_prog, block_idx, 0)
+    }
+    return true
 }

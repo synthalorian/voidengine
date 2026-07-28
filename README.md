@@ -4,7 +4,7 @@ A lightweight game engine with hot-reload, ECS, physics, audio — and now a
 3D sprite renderer with **OpenGL 3.3** and **Vulkan** backends. Built with
 **Odin** + **SDL2**.
 
-> **Version:** v0.5.0  
+> **Version:** v0.6.0  
 > **Status:** playable demos, test suite passing, ship-ready
 
 ---
@@ -36,6 +36,10 @@ core, `gl3d.odin` OpenGL 3.3 core, `vk3d.odin` Vulkan):
   tonemap, vignette, gamma correction
 - **Instanced batching** — one draw call per texture batch
 - **Specular + emissive** per sprite; emissive feeds the bloom chain
+- **3D meshes (v0.6.0)** — lit/textured meshes in the same HDR pipeline:
+  procedural builders (cube, crystal, plane), Wavefront OBJ loader
+  (v/vn/vt/f, fan triangulation, normal synthesis, corner dedup),
+  mipmaps + 8x anisotropic filtering on both backends
 
 ---
 
@@ -250,8 +254,9 @@ The test suite covers config creation, component helpers, entity creation, colli
 - [x] Gamepad support
 - [x] 3D sprite renderer: OpenGL 3.3 backend (gl3d)
 - [x] 3D sprite renderer: Vulkan backend (vk3d)
+- [x] 3D mesh rendering + OBJ loader (gl3d/vk3d)
 - [ ] Windows / macOS hot reload
-- [ ] 3D mesh rendering (gl3d/vk3d extension)
+- [ ] Shadow-casting lights
 
 ---
 

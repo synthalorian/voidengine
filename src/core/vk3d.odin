@@ -49,6 +49,23 @@ VK3D_Texture :: struct {
     sampler: vk.Sampler,
 }
 
+// GPU mesh: interleaved R3D_Vertex buffer + u32 index buffer.
+VK3D_Mesh :: struct {
+    vbo:         vk.Buffer,
+    vbo_memory:  vk.DeviceMemory,
+    ebo:         vk.Buffer,
+    ebo_memory:  vk.DeviceMemory,
+    index_count: i32,
+}
+
+// Push constants for the mesh pipeline (112 bytes, VERTEX|FRAGMENT).
+VK3D_Mesh_Push :: struct {
+    model:  linalg.Matrix4f32,
+    color:  linalg.Vector4f32,
+    params: linalg.Vector4f32, // spec, shininess, emissive, has_texture
+    misc:   linalg.Vector4f32, // uv_tiling.xy
+}
+
 // Offscreen render target (color image + view + framebuffer + post descriptor).
 VK3D_Target :: struct {
     image:       vk.Image,
@@ -136,6 +153,7 @@ VK3D_Renderer :: struct {
     post_set_layout:      vk.DescriptorSetLayout, // set 0: 1 sampler
     composite_set_layout: vk.DescriptorSetLayout, // set 0: scene + bloom
     desc_cache:           map[VK3D_Tex_Key]vk.DescriptorSet,
+    mesh_tex_cache:       map[vk.ImageView]vk.DescriptorSet,
 
     // pipelines
     sprite_layout:      vk.PipelineLayout,
@@ -145,6 +163,8 @@ VK3D_Renderer :: struct {
     blur_pipeline:      vk.Pipeline,
     composite_layout:   vk.PipelineLayout,
     composite_pipeline: vk.Pipeline,
+    mesh_layout:        vk.PipelineLayout,
+    mesh_pipeline:      vk.Pipeline,
 
     // static geometry
     quad_vbo:         vk.Buffer,
@@ -247,13 +267,14 @@ vk3d_create_image :: proc(
     w, h:   u32,
     format: vk.Format,
     usage:  vk.ImageUsageFlags,
+    mip_levels: u32 = 1,
 ) -> (vk.Image, vk.DeviceMemory) {
     ici := vk.ImageCreateInfo{
         sType         = .IMAGE_CREATE_INFO,
         imageType     = .D2,
         format        = format,
         extent        = {width = w, height = h, depth = 1},
-        mipLevels     = 1,
+        mipLevels     = mip_levels,
         arrayLayers   = 1,
         samples       = {._1},
         tiling        = .OPTIMAL,
@@ -277,7 +298,7 @@ vk3d_create_image :: proc(
 }
 
 @(private)
-vk3d_create_image_view :: proc(r: ^VK3D_Renderer, image: vk.Image, format: vk.Format, aspect: vk.ImageAspectFlags) -> vk.ImageView {
+vk3d_create_image_view :: proc(r: ^VK3D_Renderer, image: vk.Image, format: vk.Format, aspect: vk.ImageAspectFlags, level_count: u32 = 1) -> vk.ImageView {
     vci := vk.ImageViewCreateInfo{
         sType    = .IMAGE_VIEW_CREATE_INFO,
         image    = image,
@@ -286,7 +307,7 @@ vk3d_create_image_view :: proc(r: ^VK3D_Renderer, image: vk.Image, format: vk.Fo
         subresourceRange = {
             aspectMask     = aspect,
             baseMipLevel   = 0,
-            levelCount     = 1,
+            levelCount     = level_count,
             baseArrayLayer = 0,
             layerCount     = 1,
         },
@@ -302,12 +323,14 @@ vk3d_create_sampler :: proc(r: ^VK3D_Renderer, address_mode: vk.SamplerAddressMo
         sType        = .SAMPLER_CREATE_INFO,
         magFilter    = .LINEAR,
         minFilter    = .LINEAR,
-        mipmapMode   = .NEAREST,
+        mipmapMode   = .LINEAR,
         addressModeU = address_mode,
         addressModeV = address_mode,
         addressModeW = address_mode,
         minLod       = 0,
-        maxLod       = 0,
+        maxLod       = 16,
+        anisotropyEnable = true,
+        maxAnisotropy    = 8,
     }
     sampler: vk.Sampler
     vk.CreateSampler(r.device, &sci, nil, &sampler)
@@ -1105,6 +1128,7 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
     r.instances = make([dynamic]R3D_Instance)
     r.lights    = make([dynamic]R3D_Light)
     r.desc_cache = make(map[VK3D_Tex_Key]vk.DescriptorSet)
+    r.mesh_tex_cache = make(map[vk.ImageView]vk.DescriptorSet)
 
     // sensible synthwave defaults (same as gl3d)
     r.ambient         = {0.10, 0.07, 0.16}
@@ -1191,12 +1215,14 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
             pQueuePriorities = &queue_prio,
         }
         dev_exts := [1]cstring{vk.KHR_SWAPCHAIN_EXTENSION_NAME}
+        features := vk.PhysicalDeviceFeatures{samplerAnisotropy = true}
         dci := vk.DeviceCreateInfo{
             sType                   = .DEVICE_CREATE_INFO,
             queueCreateInfoCount    = 1,
             pQueueCreateInfos       = &qci,
             enabledExtensionCount   = 1,
             ppEnabledExtensionNames = &dev_exts[0],
+            pEnabledFeatures        = &features,
         }
         if vk.CreateDevice(r.physical_device, &dci, nil, &r.device) != .SUCCESS {
             fmt.eprintln("vk3d: device creation failed")
@@ -1318,6 +1344,18 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
             fmt.eprintln("vk3d: composite pipeline layout failed")
             return nil
         }
+
+        // mesh: set 0 frame UBO, set 1 single sampler, push consts model+params
+        mesh_sets := [2]vk.DescriptorSetLayout{r.frame_set_layout, r.post_set_layout}
+        mesh_push := vk.PushConstantRange{stageFlags = {.VERTEX, .FRAGMENT}, offset = 0, size = size_of(VK3D_Mesh_Push)}
+        ci.setLayoutCount      = 2
+        ci.pSetLayouts         = &mesh_sets[0]
+        ci.pushConstantRangeCount = 1
+        ci.pPushConstantRanges = &mesh_push
+        if vk.CreatePipelineLayout(r.device, &ci, nil, &r.mesh_layout) != .SUCCESS {
+            fmt.eprintln("vk3d: mesh pipeline layout failed")
+            return nil
+        }
     }
 
     // --- samplers ---
@@ -1418,7 +1456,9 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
         bright_frag, ok_bf := vk3d_load_shader_module(r, shader_dir, "vk_bright.frag")
         blur_frag,   ok_uf := vk3d_load_shader_module(r, shader_dir, "vk_blur.frag")
         comp_frag,   ok_cf := vk3d_load_shader_module(r, shader_dir, "vk_composite.frag")
-        if !(ok_sv && ok_sf && ok_pv && ok_bf && ok_uf && ok_cf) {
+        mesh_vert,   ok_mv := vk3d_load_shader_module(r, shader_dir, "vk_mesh.vert")
+        mesh_frag,   ok_mf := vk3d_load_shader_module(r, shader_dir, "vk_mesh.frag")
+        if !(ok_sv && ok_sf && ok_pv && ok_bf && ok_uf && ok_cf && ok_mv && ok_mf) {
             fmt.eprintln("vk3d: shader load failed (run tools/compile-vk-shaders.sh)")
             return nil
         }
@@ -1429,6 +1469,8 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
             vk.DestroyShaderModule(r.device, bright_frag, nil)
             vk.DestroyShaderModule(r.device, blur_frag, nil)
             vk.DestroyShaderModule(r.device, comp_frag, nil)
+            vk.DestroyShaderModule(r.device, mesh_vert, nil)
+            vk.DestroyShaderModule(r.device, mesh_frag, nil)
         }
 
         if !vk3d_create_sprite_pipeline(r, sprite_vert, sprite_frag) { return nil }
@@ -1439,6 +1481,7 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
         if !ok { return nil }
         r.composite_pipeline, ok = vk3d_create_post_pipeline(r, post_vert, comp_frag, r.composite_layout, r.composite_pass)
         if !ok { return nil }
+        if !vk3d_create_mesh_pipeline(r, mesh_vert, mesh_frag) { return nil }
     }
 
     return r
@@ -1475,9 +1518,11 @@ vk3d_shutdown :: proc(r: ^VK3D_Renderer) {
     vk.DestroyPipeline(r.device, r.bright_pipeline, nil)
     vk.DestroyPipeline(r.device, r.blur_pipeline, nil)
     vk.DestroyPipeline(r.device, r.composite_pipeline, nil)
+    vk.DestroyPipeline(r.device, r.mesh_pipeline, nil)
     vk.DestroyPipelineLayout(r.device, r.sprite_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.post_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.composite_layout, nil)
+    vk.DestroyPipelineLayout(r.device, r.mesh_layout, nil)
 
     vk3d_destroy_size_dependent(r)
 
@@ -1530,7 +1575,13 @@ vk3d_upload_pixels :: proc(r: ^VK3D_Renderer, pixels: []u8, w, h: i32, repeat :=
     copy(dst, pixels)
     vk.UnmapMemory(r.device, staging_mem)
 
-    tex.image, tex.memory = vk3d_create_image(r, u32(w), u32(h), .R8G8B8A8_UNORM, {.TRANSFER_DST, .SAMPLED})
+    mip_levels := u32(1)
+    {
+        // floor(log2(max(w,h))) + 1
+        m := max(w, h)
+        for m > 1 { m >>= 1; mip_levels += 1 }
+    }
+    tex.image, tex.memory = vk3d_create_image(r, u32(w), u32(h), .R8G8B8A8_UNORM, {.TRANSFER_SRC, .TRANSFER_DST, .SAMPLED}, mip_levels)
 
     cmd := vk3d_begin_one_shot(r)
 
@@ -1543,7 +1594,7 @@ vk3d_upload_pixels :: proc(r: ^VK3D_Renderer, pixels: []u8, w, h: i32, repeat :=
         srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
         dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
         image               = tex.image,
-        subresourceRange    = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+        subresourceRange    = {aspectMask = {.COLOR}, levelCount = mip_levels, layerCount = 1},
     }
     vk.CmdPipelineBarrier(cmd, {.TOP_OF_PIPE}, {.TRANSFER}, {}, 0, nil, 0, nil, 1, &to_transfer)
 
@@ -1553,6 +1604,49 @@ vk3d_upload_pixels :: proc(r: ^VK3D_Renderer, pixels: []u8, w, h: i32, repeat :=
     }
     vk.CmdCopyBufferToImage(cmd, staging, tex.image, .TRANSFER_DST_OPTIMAL, 1, &region)
 
+    // generate the mip chain: blit level i-1 -> i, then move i-1 to SHADER_READ
+    mip_w, mip_h := w, h
+    for level in u32(1) ..< mip_levels {
+        to_src := vk.ImageMemoryBarrier{
+            sType               = .IMAGE_MEMORY_BARRIER,
+            srcAccessMask       = {.TRANSFER_WRITE},
+            dstAccessMask       = {.TRANSFER_READ},
+            oldLayout           = .TRANSFER_DST_OPTIMAL,
+            newLayout           = .TRANSFER_SRC_OPTIMAL,
+            srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+            image               = tex.image,
+            subresourceRange    = {aspectMask = {.COLOR}, baseMipLevel = level - 1, levelCount = 1, layerCount = 1},
+        }
+        vk.CmdPipelineBarrier(cmd, {.TRANSFER}, {.TRANSFER}, {}, 0, nil, 0, nil, 1, &to_src)
+
+        next_w := max(mip_w / 2, 1)
+        next_h := max(mip_h / 2, 1)
+        blit := vk.ImageBlit{
+            srcSubresource = {aspectMask = {.COLOR}, mipLevel = level - 1, baseArrayLayer = 0, layerCount = 1},
+            srcOffsets     = {{0, 0, 0}, {mip_w, mip_h, 1}},
+            dstSubresource = {aspectMask = {.COLOR}, mipLevel = level, baseArrayLayer = 0, layerCount = 1},
+            dstOffsets     = {{0, 0, 0}, {next_w, next_h, 1}},
+        }
+        vk.CmdBlitImage(cmd, tex.image, .TRANSFER_SRC_OPTIMAL, tex.image, .TRANSFER_DST_OPTIMAL, 1, &blit, .LINEAR)
+
+        to_read := vk.ImageMemoryBarrier{
+            sType               = .IMAGE_MEMORY_BARRIER,
+            srcAccessMask       = {.TRANSFER_READ},
+            dstAccessMask       = {.SHADER_READ},
+            oldLayout           = .TRANSFER_SRC_OPTIMAL,
+            newLayout           = .SHADER_READ_ONLY_OPTIMAL,
+            srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+            image               = tex.image,
+            subresourceRange    = {aspectMask = {.COLOR}, baseMipLevel = level - 1, levelCount = 1, layerCount = 1},
+        }
+        vk.CmdPipelineBarrier(cmd, {.TRANSFER}, {.FRAGMENT_SHADER}, {}, 0, nil, 0, nil, 1, &to_read)
+
+        mip_w, mip_h = next_w, next_h
+    }
+
+    // last level: TRANSFER_DST -> SHADER_READ
     to_shader := vk.ImageMemoryBarrier{
         sType               = .IMAGE_MEMORY_BARRIER,
         srcAccessMask       = {.TRANSFER_WRITE},
@@ -1562,7 +1656,7 @@ vk3d_upload_pixels :: proc(r: ^VK3D_Renderer, pixels: []u8, w, h: i32, repeat :=
         srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
         dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
         image               = tex.image,
-        subresourceRange    = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+        subresourceRange    = {aspectMask = {.COLOR}, baseMipLevel = mip_levels - 1, levelCount = 1, layerCount = 1},
     }
     vk.CmdPipelineBarrier(cmd, {.TRANSFER}, {.FRAGMENT_SHADER}, {}, 0, nil, 0, nil, 1, &to_shader)
 
@@ -1571,7 +1665,7 @@ vk3d_upload_pixels :: proc(r: ^VK3D_Renderer, pixels: []u8, w, h: i32, repeat :=
     vk.DestroyBuffer(r.device, staging, nil)
     vk.FreeMemory(r.device, staging_mem, nil)
 
-    tex.view    = vk3d_create_image_view(r, tex.image, .R8G8B8A8_UNORM, {.COLOR})
+    tex.view    = vk3d_create_image_view(r, tex.image, .R8G8B8A8_UNORM, {.COLOR}, mip_levels)
     tex.sampler = repeat ? r.sampler_repeat : r.sampler_clamp
     return tex
 }
@@ -1775,6 +1869,9 @@ vk3d_flush :: proc(r: ^VK3D_Renderer) {
     frame := &r.frames[r.frame_index]
     cmd := frame.cmd
 
+    // rebind: mesh draws switch pipelines, so sprite batches must restore
+    vk.CmdBindPipeline(cmd, .GRAPHICS, r.sprite_pipeline)
+
     // frame uniforms — note: with deferred command recording the last write
     // of the frame applies to all batches, so set camera/lights before drawing
     // (same as typical gl3d usage).
@@ -1937,4 +2034,210 @@ vk3d_end_frame :: proc(r: ^VK3D_Renderer) {
     }
 
     r.frame_index = (r.frame_index + 1) % VK3D_FRAMES_IN_FLIGHT
+}
+
+// ----------------------------------------------------------------------------
+// Meshes
+// ----------------------------------------------------------------------------
+
+// Upload mesh data to the GPU (host-visible; meshes are treated as static).
+vk3d_upload_mesh :: proc(r: ^VK3D_Renderer, data: ^R3D_Mesh_Data) -> VK3D_Mesh {
+    mesh: VK3D_Mesh
+    mesh.index_count = i32(len(data.indices))
+    if len(data.vertices) == 0 || len(data.indices) == 0 { return mesh }
+
+    mesh.vbo, mesh.vbo_memory = vk3d_create_buffer(
+        r, vk.DeviceSize(len(data.vertices) * R3D_VERTEX_STRIDE), {.VERTEX_BUFFER}, {.HOST_VISIBLE, .HOST_COHERENT},
+    )
+    vmapped: rawptr
+    vk.MapMemory(r.device, mesh.vbo_memory, 0, vk.DeviceSize(vk.WHOLE_SIZE), {}, &vmapped)
+    vdst := ([^]R3D_Vertex)(vmapped)[:len(data.vertices)]
+    copy(vdst, data.vertices[:])
+    vk.UnmapMemory(r.device, mesh.vbo_memory)
+
+    mesh.ebo, mesh.ebo_memory = vk3d_create_buffer(
+        r, vk.DeviceSize(len(data.indices) * size_of(u32)), {.INDEX_BUFFER}, {.HOST_VISIBLE, .HOST_COHERENT},
+    )
+    imapped: rawptr
+    vk.MapMemory(r.device, mesh.ebo_memory, 0, vk.DeviceSize(vk.WHOLE_SIZE), {}, &imapped)
+    idst := ([^]u32)(imapped)[:len(data.indices)]
+    copy(idst, data.indices[:])
+    vk.UnmapMemory(r.device, mesh.ebo_memory)
+    return mesh
+}
+
+vk3d_destroy_mesh :: proc(r: ^VK3D_Renderer, mesh: ^VK3D_Mesh) {
+    if mesh.vbo != 0 {
+        vk.DestroyBuffer(r.device, mesh.vbo, nil)
+        vk.FreeMemory(r.device, mesh.vbo_memory, nil)
+    }
+    if mesh.ebo != 0 {
+        vk.DestroyBuffer(r.device, mesh.ebo, nil)
+        vk.FreeMemory(r.device, mesh.ebo_memory, nil)
+    }
+    mesh^ = {}
+}
+
+// Single-sampler descriptor set for a mesh texture (cached per view).
+@(private)
+vk3d_get_mesh_tex_set :: proc(r: ^VK3D_Renderer, tex: VK3D_Texture) -> (vk.DescriptorSet, bool) {
+    if set, ok := r.mesh_tex_cache[tex.view]; ok {
+        return set, true
+    }
+    set, ok := vk3d_alloc_desc_set(r, r.post_set_layout) // set 0: 1 sampler
+    if !ok { return 0, false }
+    info := vk.DescriptorImageInfo{
+        sampler     = tex.sampler,
+        imageView   = tex.view,
+        imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+    }
+    write := vk.WriteDescriptorSet{
+        sType           = .WRITE_DESCRIPTOR_SET,
+        dstSet          = set,
+        dstBinding      = 0,
+        descriptorCount = 1,
+        descriptorType  = .COMBINED_IMAGE_SAMPLER,
+        pImageInfo      = &info,
+    }
+    vk.UpdateDescriptorSets(r.device, 1, &write, 0, nil)
+    r.mesh_tex_cache[tex.view] = set
+    return set, true
+}
+
+// Record a mesh draw into the current frame (texture may be the zero
+// VK3D_Texture for flat color). Flushes pending sprites first to keep
+// submission order; depth testing makes the rest order-independent.
+vk3d_draw_mesh_opts :: proc(r: ^VK3D_Renderer, mesh: ^VK3D_Mesh, texture: VK3D_Texture, model: linalg.Matrix4f32, opts: R3D_Mesh_Options) {
+    if mesh.index_count == 0 { return }
+    vk3d_flush(r)
+
+    frame := &r.frames[r.frame_index]
+    cmd := frame.cmd
+
+    // frame uniforms (same values as sprite batches this frame)
+    aspect := f32(r.width) / f32(max(r.height, 1))
+    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:])
+    (^R3D_Frame_Uniforms)(frame.ubo_mapped)^ = uniforms
+
+    tex := texture
+    has_tex := tex.view != 0
+    if !has_tex {
+        tex = r.flat_normal // dummy binding; shader ignores it
+    }
+    tex_set, ok := vk3d_get_mesh_tex_set(r, tex)
+    if !ok { return }
+
+    vk.CmdBindPipeline(cmd, .GRAPHICS, r.mesh_pipeline)
+    sets := [2]vk.DescriptorSet{frame.ubo_set, tex_set}
+    vk.CmdBindDescriptorSets(cmd, .GRAPHICS, r.mesh_layout, 0, 2, &sets[0], 0, nil)
+
+    push := VK3D_Mesh_Push{
+        model  = model,
+        color  = opts.color,
+        params = {opts.spec_strength, opts.shininess, opts.emissive, has_tex ? 1 : 0},
+        misc   = {opts.uv_tiling.x, opts.uv_tiling.y, 0, 0},
+    }
+    vk.CmdPushConstants(cmd, r.mesh_layout, {.VERTEX, .FRAGMENT}, 0, size_of(VK3D_Mesh_Push), &push)
+
+    vbo := mesh.vbo
+    offset := vk.DeviceSize(0)
+    vk.CmdBindVertexBuffers(cmd, 0, 1, &vbo, &offset)
+    vk.CmdBindIndexBuffer(cmd, mesh.ebo, 0, .UINT32)
+    vk.CmdDrawIndexed(cmd, u32(mesh.index_count), 1, 0, 0, 0)
+}
+
+// Draw a mesh with default options.
+vk3d_draw_mesh :: proc(r: ^VK3D_Renderer, mesh: ^VK3D_Mesh, texture: VK3D_Texture, model: linalg.Matrix4f32) {
+    vk3d_draw_mesh_opts(r, mesh, texture, model, r3d_default_mesh_options())
+}
+
+@(private)
+vk3d_create_mesh_pipeline :: proc(r: ^VK3D_Renderer, vert, frag: vk.ShaderModule) -> bool {
+    stages := [2]vk.PipelineShaderStageCreateInfo{
+        {sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.VERTEX},   module = vert, pName = "main"},
+        {sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.FRAGMENT}, module = frag, pName = "main"},
+    }
+
+    // binding 0: interleaved R3D_Vertex (pos@0, normal@12, uv@24, stride 32)
+    binding := vk.VertexInputBindingDescription{binding = 0, stride = R3D_VERTEX_STRIDE, inputRate = .VERTEX}
+    attrs := [3]vk.VertexInputAttributeDescription{
+        {location = 0, binding = 0, format = .R32G32B32_SFLOAT, offset = u32(offset_of(R3D_Vertex, pos))},
+        {location = 1, binding = 0, format = .R32G32B32_SFLOAT, offset = u32(offset_of(R3D_Vertex, normal))},
+        {location = 2, binding = 0, format = .R32G32_SFLOAT,    offset = u32(offset_of(R3D_Vertex, uv))},
+    }
+    vi := vk.PipelineVertexInputStateCreateInfo{
+        sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        vertexBindingDescriptionCount   = 1,
+        pVertexBindingDescriptions      = &binding,
+        vertexAttributeDescriptionCount = 3,
+        pVertexAttributeDescriptions    = &attrs[0],
+    }
+    ia := vk.PipelineInputAssemblyStateCreateInfo{
+        sType    = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        topology = .TRIANGLE_LIST,
+    }
+    vp := vk.PipelineViewportStateCreateInfo{
+        sType         = .PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        viewportCount = 1,
+        scissorCount  = 1,
+    }
+    rs := vk.PipelineRasterizationStateCreateInfo{
+        sType       = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        polygonMode = .FILL,
+        cullMode    = {},  // off: the Y-flipped projection inverts winding
+        frontFace   = .COUNTER_CLOCKWISE,
+        lineWidth   = 1.0,
+    }
+    ms := vk.PipelineMultisampleStateCreateInfo{
+        sType                = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        rasterizationSamples = {._1},
+    }
+    ds := vk.PipelineDepthStencilStateCreateInfo{
+        sType            = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        depthTestEnable  = true,
+        depthWriteEnable = true,
+        depthCompareOp   = .LESS,
+    }
+    blend_att := vk.PipelineColorBlendAttachmentState{
+        blendEnable         = true,
+        srcColorBlendFactor = .SRC_ALPHA,
+        dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA,
+        colorBlendOp        = .ADD,
+        srcAlphaBlendFactor = .ONE,
+        dstAlphaBlendFactor = .ONE_MINUS_SRC_ALPHA,
+        alphaBlendOp        = .ADD,
+        colorWriteMask      = {.R, .G, .B, .A},
+    }
+    cb := vk.PipelineColorBlendStateCreateInfo{
+        sType           = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        attachmentCount = 1,
+        pAttachments    = &blend_att,
+    }
+    dyn_states := [2]vk.DynamicState{.VIEWPORT, .SCISSOR}
+    dyn := vk.PipelineDynamicStateCreateInfo{
+        sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        dynamicStateCount = 2,
+        pDynamicStates    = &dyn_states[0],
+    }
+    ci := vk.GraphicsPipelineCreateInfo{
+        sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
+        stageCount          = 2,
+        pStages             = &stages[0],
+        pVertexInputState   = &vi,
+        pInputAssemblyState = &ia,
+        pViewportState      = &vp,
+        pRasterizationState = &rs,
+        pMultisampleState   = &ms,
+        pDepthStencilState  = &ds,
+        pColorBlendState    = &cb,
+        pDynamicState       = &dyn,
+        layout              = r.mesh_layout,
+        renderPass          = r.scene_pass,
+        subpass             = 0,
+    }
+    if vk.CreateGraphicsPipelines(r.device, 0, 1, &ci, nil, &r.mesh_pipeline) != .SUCCESS {
+        fmt.eprintln("vk3d: mesh pipeline creation failed")
+        return false
+    }
+    return true
 }

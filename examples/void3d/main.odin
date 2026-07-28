@@ -37,6 +37,12 @@ TexHandle :: struct {
     vk: ve.VK3D_Texture,
 }
 
+// Mesh handle that works for either backend.
+MeshHandle :: struct {
+    gl: ve.GL3D_Mesh,
+    vk: ve.VK3D_Mesh,
+}
+
 Renderer :: struct {
     backend: Backend,
     gl:      ^ve.GL3D_Renderer,
@@ -60,6 +66,22 @@ r_load_texture :: proc(r: ^Renderer, path: string, repeat := false) -> (TexHandl
         h.vk = tex
     }
     return h, true
+}
+
+r_upload_mesh :: proc(r: ^Renderer, data: ^ve.R3D_Mesh_Data) -> MeshHandle {
+    h: MeshHandle
+    switch r.backend {
+    case .GL: h.gl = ve.gl3d_upload_mesh(data)
+    case .VK: h.vk = ve.vk3d_upload_mesh(r.vk, data)
+    }
+    return h
+}
+
+r_draw_mesh :: proc(r: ^Renderer, mesh: ^MeshHandle, tex: TexHandle, model: linalg.Matrix4f32, opts: ve.R3D_Mesh_Options) {
+    switch r.backend {
+    case .GL: ve.gl3d_draw_mesh_opts(r.gl, &mesh.gl, tex.gl, model, opts)
+    case .VK: ve.vk3d_draw_mesh_opts(r.vk, &mesh.vk, tex.vk, model, opts)
+    }
 }
 
 r_set_camera :: proc(r: ^Renderer, cam: ^ve.R3D_Camera) {
@@ -137,6 +159,10 @@ Game :: struct {
     rune:        TexPair,
     grid:        TexPair,
     ship:        TexPair,
+
+    // meshes
+    obelisk:     MeshHandle,
+    dais:        MeshHandle,
 
     // scene
     cam:         ve.R3D_Camera,
@@ -231,6 +257,14 @@ game_init :: proc(e: ^ve.Engine) {
     g.orb     = load_pair(g, "orb")
     g.rune    = load_pair(g, "rune")
     g.ship    = load_pair(g, "ship_sheet")
+
+    // meshes: crystal obelisk + dais (procedural)
+    obelisk_data := ve.r3d_mesh_crystal(6, 1.0, 1.9, 1.2)
+    g.obelisk = r_upload_mesh(&g.r, &obelisk_data)
+    ve.r3d_mesh_data_destroy(&obelisk_data)
+    dais_data := ve.r3d_mesh_cube()
+    g.dais = r_upload_mesh(&g.r, &dais_data)
+    ve.r3d_mesh_data_destroy(&dais_data)
 
     g.cam = ve.R3D_Camera{
         position = {9, 3.2, 0},
@@ -367,13 +401,29 @@ game_render :: proc(e: ^ve.Engine, _: ^SDL.Renderer) {
         rp_draw(g, &g.orb, pos, {0.55, 0.55}, opts)
     }
 
-    // --- center: spinning rune ring ---
+    // --- dais: low cube platform at scene center ---
+    dais_opts := ve.r3d_default_mesh_options()
+    dais_opts.uv_tiling = {7, 7}
+    dais_opts.spec_strength = 0.9
+    dais_opts.shininess = 48
+    dais_model := linalg.matrix4_translate(linalg.Vector3f32{0, 0.15, 0}) * linalg.matrix4_scale(linalg.Vector3f32{3.5, 0.3, 3.5})
+    r_draw_mesh(&g.r, &g.dais, g.grid.diffuse, dais_model, dais_opts)
+
+    // --- obelisk: spinning faceted crystal mesh above the dais ---
+    obelisk_opts := ve.r3d_default_mesh_options()
+    obelisk_opts.emissive = 0.45
+    obelisk_opts.spec_strength = 1.3
+    obelisk_opts.shininess = 96
+    obelisk_model := linalg.matrix4_translate(linalg.Vector3f32{0, 2.3, 0}) * linalg.matrix4_rotate(t * 0.7, linalg.Vector3f32{0, 1, 0})
+    r_draw_mesh(&g.r, &g.obelisk, g.crystal.diffuse, obelisk_model, obelisk_opts)
+
+    // --- center: spinning rune ring (halo above the obelisk) ---
     rune_opts := ve.r3d_default_sprite_options()
     rune_opts.rotation = t * 0.5
     rune_opts.emissive = 0.9
     rune_opts.spec_strength = 1.2
     rune_opts.shininess = 96
-    rp_draw(g, &g.rune, {0, 1.8, 0}, {3.2, 3.2}, rune_opts)
+    rp_draw(g, &g.rune, {0, 4.4, 0}, {3.2, 3.2}, rune_opts)
 
     // --- animated ship circling the scene (cylindrical billboard, 2 frames) ---
     ship_a := t * 0.8
@@ -474,8 +524,14 @@ game_handle_event :: proc(e: ^ve.Engine, event: ^SDL.Event) -> bool {
 game_shutdown :: proc(e: ^ve.Engine) {
     g := cast(^Game)e.user_data
     switch g.r.backend {
-    case .GL: ve.gl3d_shutdown(g.r.gl)
-    case .VK: ve.vk3d_shutdown(g.r.vk)
+    case .GL:
+        ve.gl3d_destroy_mesh(&g.obelisk.gl)
+        ve.gl3d_destroy_mesh(&g.dais.gl)
+        ve.gl3d_shutdown(g.r.gl)
+    case .VK:
+        ve.vk3d_destroy_mesh(g.r.vk, &g.obelisk.vk)
+        ve.vk3d_destroy_mesh(g.r.vk, &g.dais.vk)
+        ve.vk3d_shutdown(g.r.vk)
     }
 }
 
