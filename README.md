@@ -1,4 +1,8 @@
-# VoidEngine 🎮🌌
+# VoidEngine 🎮🌆
+
+![Version](https://img.shields.io/badge/version-v0.6.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Engine](https://img.shields.io/badge/engine-Odin%20%2B%20SDL2-orange)
 
 A lightweight game engine with hot-reload, ECS, physics, audio — and now a
 3D sprite renderer with **OpenGL 3.3** and **Vulkan** backends. Built with
@@ -117,8 +121,9 @@ voidengine/
 ---
 
 ## VoidEngine Studio
+## VoidEngine Studio
 
-Want a GUI instead of the terminal? Use **VoidEngine Studio** — a Tauri + React desktop app for building and testing your games.
+Want a GUI instead of the terminal? Use **VoidEngine Studio** — a Tauri + React desktop app for building and testing your games. Requires Node.js + Rust.
 
 ```bash
 cd studio
@@ -126,7 +131,14 @@ npm install
 npm run tauri:dev
 ```
 
-Studio auto-detects VoidEngine projects, lets you run **Check / Test / Build All**, and gives you per-example **Build Example** / **Run Example** buttons with live output. See [`studio/README.md`](studio/README.md) for details.
+Studio auto-detects VoidEngine projects, lets you run **Check / Test / Build All**,
+and gives you per-example **Build Example** / **Run Example** buttons with live
+output. See [`studio/README.md`](studio/README.md) for details.
+
+**Requirements:**
+- Odin compiler on PATH (`odin version` should print a version)
+- GCC / Clang for native builds
+- Node.js 22+ + Rust for the Studio GUI
 
 ---
 
