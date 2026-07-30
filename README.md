@@ -121,7 +121,6 @@ voidengine/
 ---
 
 ## VoidEngine Studio
-## VoidEngine Studio
 
 Want a GUI instead of the terminal? Use **VoidEngine Studio** — a Tauri + React desktop app for building and testing your games. Requires Node.js + Rust.
 
@@ -135,6 +134,18 @@ Studio auto-detects VoidEngine projects, lets you run **Check / Test / Build All
 and gives you per-example **Build Example** / **Run Example** buttons with live
 output. See [`studio/README.md`](studio/README.md) for details.
 
+**Requirements:**
+- Odin compiler on PATH (`odin version` should print a version)
+- GCC / Clang for native builds
+- Node.js 22+ + Rust for the Studio GUI
+- **Vulkan SDK** / `glslc` on PATH for SPIR-V shader compilation (`pacman -S shaderc`)
+- Mesa/Vulkan drivers loaded (`vulkaninfo --summary` should succeed)
+
+**Vulkan troubleshooting:** If `make vk-shaders` fails, install `glslc` from `shaderc` and confirm `vulkaninfo` output. If `void3d-vk` crashes on launch, check `dmesg | tail` for GPU resets or missing extensions.
+
+---
+
+## Quick Start
 **Requirements:**
 - Odin compiler on PATH (`odin version` should print a version)
 - GCC / Clang for native builds
