@@ -79,12 +79,72 @@ R3D_INSTANCE_STRIDE :: size_of(R3D_Instance) // 96
 
 // Frame uniforms — std140-compatible, bound as a UBO on both backends.
 R3D_Frame_Uniforms :: struct {
-    view_proj:   linalg.Matrix4f32,
-    camera_pos:  linalg.Vector4f32, // xyz = position
-    ambient:     linalg.Vector4f32, // rgb = ambient light
-    light_pos:   [R3D_MAX_LIGHTS]linalg.Vector4f32,   // xyz = pos, w = radius
-    light_color: [R3D_MAX_LIGHTS]linalg.Vector4f32,   // rgb = HDR intensity
-    meta:        linalg.Vector4f32, // x = num_lights
+    // NOTE: both Matrix4f32 members FIRST — Odin aligns matrices to 32 bytes,
+    // std140 aligns mat4 to 16. Keeping matrices at offsets 0 and 64 makes the
+    // Odin struct layout identical to the GLSL std140 block (736 bytes).
+    view_proj:       linalg.Matrix4f32,
+    light_view_proj: linalg.Matrix4f32,
+    camera_pos:      linalg.Vector4f32, // xyz = position
+    ambient:         linalg.Vector4f32, // rgb = ambient light
+    light_pos:       [R3D_MAX_LIGHTS]linalg.Vector4f32,   // xyz = pos, w = radius
+    light_color:     [R3D_MAX_LIGHTS]linalg.Vector4f32,   // rgb = HDR intensity
+    meta:            linalg.Vector4f32, // x = num_lights
+    sun_dir:         linalg.Vector4f32, // xyz = direction light travels
+    sun_color:       linalg.Vector4f32, // rgb = HDR intensity
+    shadow_params:   linalg.Vector4f32, // x = shadows on, y = bias, z = texel, w = 1 if NDC z needs remap (GL)
+}
+
+// Directional light (the "sun") with optional shadow casting.
+R3D_Sun :: struct {
+    direction:      linalg.Vector3f32, // direction light travels (from sun toward scene)
+    color:          linalg.Vector3f32, // linear HDR intensity
+    enabled:        bool,
+    cast_shadows:   bool,
+    shadow_radius:  f32,  // ortho half-extent of the shadow frustum
+    shadow_bias:    f32,  // depth bias when sampling
+    // computed each frame via r3d_sun_view_proj:
+    light_view_proj: linalg.Matrix4f32,
+    shadow_texel:    f32, // 1 / shadow map resolution
+}
+
+// Right-handed orthographic projection, OpenGL clip conventions (z in [-1,1]).
+r3d_ortho_gl :: proc "contextless" (left, right, bottom, top, near_z, far_z: f32) -> (m: linalg.Matrix4f32) {
+    m[0, 0] = 2 / (right - left)
+    m[1, 1] = 2 / (top - bottom)
+    m[2, 2] = -2 / (far_z - near_z)
+    m[3, 0] = -(right + left) / (right - left)
+    m[3, 1] = -(top + bottom) / (top - bottom)
+    m[3, 2] = -(far_z + near_z) / (far_z - near_z)
+    m[3, 3] = 1
+    return
+}
+
+// Right-handed orthographic projection, Vulkan clip conventions (z in [0,1], Y flipped).
+r3d_ortho_vk :: proc "contextless" (left, right, bottom, top, near_z, far_z: f32) -> (m: linalg.Matrix4f32) {
+    m[0, 0] = 2 / (right - left)
+    m[1, 1] = -2 / (top - bottom)
+    m[2, 2] = -1 / (far_z - near_z)
+    m[3, 0] = -(right + left) / (right - left)
+    m[3, 1] = -(top + bottom) / (top - bottom)
+    m[3, 2] = near_z / (far_z - near_z)
+    m[3, 3] = 1
+    return
+}
+
+// Build the sun's shadow view-projection: an ortho box of `shadow_radius`
+// around `center`, looking along the sun direction. Result is also stored
+// in sun.light_view_proj.
+r3d_sun_view_proj :: proc "contextless" (sun: ^R3D_Sun, center: linalg.Vector3f32, vulkan: bool) -> linalg.Matrix4f32 {
+    radius := max(sun.shadow_radius, 1.0)
+    dir := linalg.normalize(sun.direction)
+    eye := center - dir * (radius * 2)
+    view := linalg.matrix4_look_at(eye, center, linalg.Vector3f32{0, 1, 0})
+    near_z: f32 = 0.1
+    far_z  := radius * 4
+    proj := vulkan ? r3d_ortho_vk(-radius, radius, -radius, radius, near_z, far_z) :
+                     r3d_ortho_gl(-radius, radius, -radius, radius, near_z, far_z)
+    sun.light_view_proj = proj * view
+    return sun.light_view_proj
 }
 
 // Camera basis vectors from yaw/pitch (no roll).
@@ -192,6 +252,7 @@ r3d_make_frame_uniforms :: proc "contextless" (
     vulkan:    bool,
     ambient:   linalg.Vector3f32,
     lights:    []R3D_Light,
+    sun:       ^R3D_Sun = nil,
 ) -> (u: R3D_Frame_Uniforms) {
     u.view_proj  = r3d_camera_view_proj(cam, aspect, vulkan)
     u.camera_pos = {cam.position.x, cam.position.y, cam.position.z, 0}
@@ -202,5 +263,14 @@ r3d_make_frame_uniforms :: proc "contextless" (
         u.light_color[i] = {lights[i].color.x, lights[i].color.y, lights[i].color.z, 0}
     }
     u.meta = {f32(n), 0, 0, 0}
+    if sun != nil && sun.enabled {
+        u.light_view_proj = sun.light_view_proj
+        dir := linalg.normalize(sun.direction)
+        u.sun_dir   = {dir.x, dir.y, dir.z, 0}
+        u.sun_color = {sun.color.x, sun.color.y, sun.color.z, 0}
+        z_remap: f32 = vulkan ? 0 : 1
+        on: f32 = sun.cast_shadows ? 1 : 0
+        u.shadow_params = {on, sun.shadow_bias, sun.shadow_texel, z_remap}
+    }
     return
 }

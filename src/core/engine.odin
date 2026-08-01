@@ -866,6 +866,7 @@ audio_init :: proc(audio: ^AudioEngine) {
     }
     
     audio.initialized = true
+    MIX.AllocateChannels(16) // headroom: SFX bursts can't steal loop-layer channels
     audio.master_volume = 1.0
     audio.sfx_volume = 1.0
     audio.sounds = make(map[string]^MIX.Chunk)
@@ -957,6 +958,22 @@ audio_play_music :: proc(audio: ^AudioEngine, name: string, loops: i32 = -1) {
 audio_stop_music :: proc(audio: ^AudioEngine) {
     if audio.initialized {
         MIX.HaltMusic()
+    }
+}
+
+// play a chunk looping forever on a dedicated channel (music layers, ambience)
+audio_play_loop :: proc(audio: ^AudioEngine, name: string, channel: i32) {
+    if !audio.initialized do return
+    if chunk, ok := audio.sounds[name]; ok {
+        MIX.PlayChannel(channel, chunk, -1)
+    }
+}
+
+// per-channel volume (0..1) for looped layers. NOTE: audio_set_sfx_volume
+// stomps every channel (-1), so layered loops should re-apply each frame.
+audio_set_channel_volume :: proc(audio: ^AudioEngine, channel: i32, volume: f32) {
+    if audio.initialized {
+        MIX.Volume(channel, i32(clamp(volume, 0.0, 1.0) * 128))
     }
 }
 
