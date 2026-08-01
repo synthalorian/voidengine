@@ -173,6 +173,35 @@ r_resize :: proc(r: ^Renderer, w, h: i32) {
     }
 }
 
+r_size :: proc(r: ^Renderer) -> (w, h: i32) {
+    switch r.backend {
+    case .GL: return r.gl.width, r.gl.height
+    case .VK: return r.vk.width, r.vk.height
+    }
+    return 0, 0
+}
+
+r_debug_line :: proc(r: ^Renderer, a, b: linalg.Vector3f32, color: linalg.Vector4f32) {
+    switch r.backend {
+    case .GL: ve.gl3d_debug_line(r.gl, a, b, color)
+    case .VK: ve.vk3d_debug_line(r.vk, a, b, color)
+    }
+}
+
+r_debug_aabb :: proc(r: ^Renderer, bmin, bmax: linalg.Vector3f32, color: linalg.Vector4f32) {
+    switch r.backend {
+    case .GL: ve.gl3d_debug_aabb(r.gl, bmin, bmax, color)
+    case .VK: ve.vk3d_debug_aabb(r.vk, bmin, bmax, color)
+    }
+}
+
+r_debug_axes :: proc(r: ^Renderer, origin: linalg.Vector3f32, size: f32) {
+    switch r.backend {
+    case .GL: ve.gl3d_debug_axes(r.gl, origin, size)
+    case .VK: ve.vk3d_debug_axes(r.vk, origin, size)
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Game state
 // ----------------------------------------------------------------------------
@@ -477,6 +506,30 @@ game_render :: proc(e: ^ve.Engine, _: ^SDL.Renderer) {
     ship_opts.spec_strength = 0.8
     ship_pos := linalg.Vector3f32{4.5 * math.cos(ship_a), 2.6 + 0.5 * math.sin(t * 2.3), 4.5 * math.sin(ship_a)}
     rp_draw(g, &g.ship, ship_pos, {1.4, 1.4}, ship_opts)
+
+    // --- debug draw: axes, obelisk bounds, mouse picking ray ---
+    OBELISK_MIN := linalg.Vector3f32{-0.9, 1.3, -0.9}
+    OBELISK_MAX := linalg.Vector3f32{ 0.9, 3.3,  0.9}
+    r_debug_axes(&g.r, {0, 0.55, 0}, 1.5) // floats above the dais top (y=0.45) — coplanar lines z-fight
+    r_debug_aabb(&g.r, OBELISK_MIN, OBELISK_MAX, {1, 0.85, 0.2, 0.9})
+
+    mx, my: i32
+    SDL.GetMouseState(&mx, &my)
+    w, h := r_size(&g.r)
+    if g.bench_frames > 0 { mx = w / 3; my = h * 2 / 3 } // deterministic ray for shots
+    ray := ve.ray3d_from_screen(&g.cam, f32(mx), f32(my), f32(w), f32(h), g.r.backend == .VK)
+    hit_color := linalg.Vector4f32{0.2, 1, 0.9, 1}
+    if _, box_hit := ve.ray3d_aabb(ray, OBELISK_MIN, OBELISK_MAX); box_hit {
+        hit_color = {1, 0.3, 0.6, 1} // cursor over the obelisk bounds
+        r_debug_aabb(&g.r, OBELISK_MIN, OBELISK_MAX, hit_color)
+    }
+    if t_ground, ground_hit := ve.ray3d_plane(ray, {0, 0, 0}, {0, 1, 0}); ground_hit {
+        hit := ve.ray3d_at(ray, t_ground)
+        r_debug_line(&g.r, ray.origin, hit, hit_color)
+        s: f32 = 0.25
+        r_debug_line(&g.r, hit - {s, 0, 0}, hit + {s, 0, 0}, hit_color)
+        r_debug_line(&g.r, hit - {0, 0, s}, hit + {0, 0, s}, hit_color)
+    }
 
     r_set_post(&g.r, g.bloom, g.exposure)
     r_end_frame(&g.r)

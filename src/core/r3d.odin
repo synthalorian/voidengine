@@ -77,6 +77,15 @@ R3D_Instance :: struct {
 
 R3D_INSTANCE_STRIDE :: size_of(R3D_Instance) // 96
 
+// CPU-side debug line vertex — accumulated per frame by both backends and
+// drawn depth-tested after all scene geometry, then cleared.
+R3D_Debug_Vertex :: struct {
+    pos:   linalg.Vector3f32,
+    color: linalg.Vector4f32,
+}
+
+R3D_DEBUG_VERTEX_STRIDE :: size_of(R3D_Debug_Vertex) // 28
+
 // Frame uniforms — std140-compatible, bound as a UBO on both backends.
 R3D_Frame_Uniforms :: struct {
     // NOTE: both Matrix4f32 members FIRST — Odin aligns matrices to 32 bytes,

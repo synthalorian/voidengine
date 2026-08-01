@@ -87,6 +87,12 @@ GL3D_Renderer :: struct {
     shadow_tex:         u32,
     shadow_prog:        u32,
     shadow_res:         i32,
+
+    // debug lines
+    lines:              [dynamic]R3D_Debug_Vertex,
+    line_prog:          u32,
+    line_vao:           u32,
+    line_vbo:           u32,
 }
 
 // ----------------------------------------------------------------------------
@@ -249,6 +255,39 @@ GL3D_SHADOW_FRAG :: `#version 330 core
 void main() {}
 `
 
+GL3D_LINE_VERT :: `#version 330 core
+layout(location=0) in vec3 a_pos;
+layout(location=1) in vec4 a_color;
+
+layout(std140) uniform Frame {
+    mat4 u_view_proj;
+    mat4 u_light_view_proj;
+    vec4 u_camera_pos;
+    vec4 u_ambient;
+    vec4 u_light_pos[16];
+    vec4 u_light_color[16];
+    vec4 u_meta;
+    vec4 u_sun_dir;
+    vec4 u_sun_color;
+    vec4 u_shadow_params;
+};
+
+out vec4 v_color;
+
+void main() {
+    v_color = a_color;
+    gl_Position = u_view_proj * vec4(a_pos, 1.0);
+}
+`
+
+GL3D_LINE_FRAG :: `#version 330 core
+in vec4 v_color;
+out vec4 frag_color;
+void main() {
+    frag_color = v_color;
+}
+`
+
 GL3D_POST_VERT :: `#version 330 core
 layout(location=0) in vec2 a_pos;
 layout(location=1) in vec2 a_uv;
@@ -393,6 +432,8 @@ gl3d_init :: proc(width, height: i32) -> ^GL3D_Renderer {
     if !gl3d_init_mesh_pipeline(r) { return nil }
     r.shadow_prog, ok = gl3d_build_program(GL3D_SHADOW_VERT, GL3D_SHADOW_FRAG)
     if !ok { return nil }
+    r.line_prog, ok = gl3d_build_program(GL3D_LINE_VERT, GL3D_LINE_FRAG)
+    if !ok { return nil }
 
     // UBO: frame uniforms at binding point 0 in both sprite programs
     gl.GenBuffers(1, &r.ubo)
@@ -403,7 +444,22 @@ gl3d_init :: proc(width, height: i32) -> ^GL3D_Renderer {
     if block_idx != gl.INVALID_INDEX {
         gl.UniformBlockBinding(r.sprite_prog, block_idx, 0)
     }
+    line_block := gl.GetUniformBlockIndex(r.line_prog, "Frame")
+    if line_block != gl.INVALID_INDEX {
+        gl.UniformBlockBinding(r.line_prog, line_block, 0)
+    }
 
+    // --- debug line geometry (streaming pos+color pairs) ---
+    gl.GenVertexArrays(1, &r.line_vao)
+    gl.BindVertexArray(r.line_vao)
+    gl.GenBuffers(1, &r.line_vbo)
+    gl.BindBuffer(gl.ARRAY_BUFFER, r.line_vbo)
+    gl.BufferData(gl.ARRAY_BUFFER, 65536 * R3D_DEBUG_VERTEX_STRIDE, nil, gl.STREAM_DRAW)
+    gl.EnableVertexAttribArray(0)
+    gl.VertexAttribPointer(0, 3, gl.FLOAT, false, R3D_DEBUG_VERTEX_STRIDE, offset_of(R3D_Debug_Vertex, pos))
+    gl.EnableVertexAttribArray(1)
+    gl.VertexAttribPointer(1, 4, gl.FLOAT, false, R3D_DEBUG_VERTEX_STRIDE, offset_of(R3D_Debug_Vertex, color))
+    gl.BindVertexArray(0)
 
     // --- sprite quad geometry (corner + uv interleaved, 4 verts) ---
     // uv y=0 maps to the first uploaded row (top of a PNG), so v is flipped
@@ -608,6 +664,10 @@ gl3d_shutdown :: proc(r: ^GL3D_Renderer) {
     gl.DeleteProgram(r.shadow_prog)
     gl.DeleteFramebuffers(1, &r.shadow_fbo)
     gl.DeleteTextures(1, &r.shadow_tex)
+    gl.DeleteProgram(r.line_prog)
+    gl.DeleteVertexArrays(1, &r.line_vao)
+    gl.DeleteBuffers(1, &r.line_vbo)
+    delete(r.lines)
     delete(r.instances)
     delete(r.lights)
     free(r)
@@ -700,6 +760,38 @@ gl3d_add_light :: proc(r: ^GL3D_Renderer, light: R3D_Light) {
     }
 }
 
+// Queue a world-space debug line. Lines are drawn depth-tested at end_frame
+// (after all scene geometry) and cleared — re-submit every frame.
+gl3d_debug_line :: proc(r: ^GL3D_Renderer, a, b: linalg.Vector3f32, color: linalg.Vector4f32) {
+    append(&r.lines, R3D_Debug_Vertex{pos = a, color = color})
+    append(&r.lines, R3D_Debug_Vertex{pos = b, color = color})
+}
+
+// Convenience: wireframe AABB from min/max corners.
+gl3d_debug_aabb :: proc(r: ^GL3D_Renderer, bmin, bmax: linalg.Vector3f32, color: linalg.Vector4f32) {
+    c := [8]linalg.Vector3f32{
+        {bmin.x, bmin.y, bmin.z}, {bmax.x, bmin.y, bmin.z},
+        {bmax.x, bmin.y, bmax.z}, {bmin.x, bmin.y, bmax.z},
+        {bmin.x, bmax.y, bmin.z}, {bmax.x, bmax.y, bmin.z},
+        {bmax.x, bmax.y, bmax.z}, {bmin.x, bmax.y, bmax.z},
+    }
+    edges := [12][2]int{
+        {0, 1}, {1, 2}, {2, 3}, {3, 0}, // bottom
+        {4, 5}, {5, 6}, {6, 7}, {7, 4}, // top
+        {0, 4}, {1, 5}, {2, 6}, {3, 7}, // verticals
+    }
+    for e in edges {
+        gl3d_debug_line(r, c[e[0]], c[e[1]], color)
+    }
+}
+
+// Convenience: RGB axis tripod (x=red, y=green, z=blue).
+gl3d_debug_axes :: proc(r: ^GL3D_Renderer, origin: linalg.Vector3f32, size: f32) {
+    gl3d_debug_line(r, origin, origin + {size, 0, 0}, {1, 0.2, 0.2, 1})
+    gl3d_debug_line(r, origin, origin + {0, size, 0}, {0.2, 1, 0.2, 1})
+    gl3d_debug_line(r, origin, origin + {0, 0, size}, {0.3, 0.5, 1, 1})
+}
+
 gl3d_begin_frame :: proc(r: ^GL3D_Renderer) {
     gl.BindFramebuffer(gl.FRAMEBUFFER, r.scene_fbo)
     gl.Viewport(0, 0, r.width, r.height)
@@ -783,6 +875,23 @@ gl3d_draw_fullscreen :: proc(r: ^GL3D_Renderer) {
 
 gl3d_end_frame :: proc(r: ^GL3D_Renderer) {
     gl3d_flush(r)
+
+    // debug lines: depth-tested, into the scene target before post
+    if len(r.lines) > 0 {
+        gl.UseProgram(r.line_prog)
+        aspect := f32(r.width) / f32(max(r.height, 1))
+        uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:], &r.sun)
+        gl.BindBuffer(gl.UNIFORM_BUFFER, r.ubo)
+        gl.BufferSubData(gl.UNIFORM_BUFFER, 0, size_of(R3D_Frame_Uniforms), &uniforms)
+        gl.BindBuffer(gl.ARRAY_BUFFER, r.line_vbo)
+        n := len(r.lines)
+        gl.BufferData(gl.ARRAY_BUFFER, n * R3D_DEBUG_VERTEX_STRIDE, nil, gl.STREAM_DRAW)
+        gl.BufferSubData(gl.ARRAY_BUFFER, 0, n * R3D_DEBUG_VERTEX_STRIDE, raw_data(r.lines))
+        gl.BindVertexArray(r.line_vao)
+        gl.DrawArrays(gl.LINES, 0, i32(n))
+        gl.BindVertexArray(0)
+        clear(&r.lines)
+    }
 
     gl.Disable(gl.DEPTH_TEST)
     gl.Disable(gl.BLEND)

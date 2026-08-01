@@ -96,6 +96,10 @@ VK3D_Frame :: struct {
     inst_memory:     vk.DeviceMemory,
     inst_mapped:     rawptr,
     inst_capacity:   int,
+    line_buf:        vk.Buffer,
+    line_memory:     vk.DeviceMemory,
+    line_mapped:     rawptr,
+    line_capacity:   int,
     retired:         [dynamic]VK3D_Retired_Buffer,
 }
 
@@ -182,6 +186,11 @@ VK3D_Renderer :: struct {
     shadow_res:         i32,
     sun:                R3D_Sun,
     shadow_draws:       [dynamic]VK3D_Shadow_Draw,
+
+    // debug lines
+    line_layout:        vk.PipelineLayout,
+    line_pipeline:      vk.Pipeline,
+    lines:              [dynamic]R3D_Debug_Vertex,
 
     // static geometry
     quad_vbo:         vk.Buffer,
@@ -1441,6 +1450,17 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
             fmt.eprintln("vk3d: shadow pipeline layout failed")
             return nil
         }
+
+        // debug lines: set 0 frame UBO, no push constants
+        line_sets := [1]vk.DescriptorSetLayout{r.frame_set_layout}
+        ci.setLayoutCount         = 1
+        ci.pSetLayouts            = &line_sets[0]
+        ci.pushConstantRangeCount = 0
+        ci.pPushConstantRanges    = nil
+        if vk.CreatePipelineLayout(r.device, &ci, nil, &r.line_layout) != .SUCCESS {
+            fmt.eprintln("vk3d: line pipeline layout failed")
+            return nil
+        }
     }
 
     // --- samplers ---
@@ -1562,7 +1582,9 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
         mesh_vert,   ok_mv := vk3d_load_shader_module(r, shader_dir, "vk_mesh.vert")
         mesh_frag,   ok_mf := vk3d_load_shader_module(r, shader_dir, "vk_mesh.frag")
         shadow_vert, ok_wv := vk3d_load_shader_module(r, shader_dir, "vk_shadow.vert")
-        if !(ok_sv && ok_sf && ok_pv && ok_bf && ok_uf && ok_cf && ok_mv && ok_mf && ok_wv) {
+        line_vert,   ok_lv := vk3d_load_shader_module(r, shader_dir, "vk_line.vert")
+        line_frag,   ok_lf := vk3d_load_shader_module(r, shader_dir, "vk_line.frag")
+        if !(ok_sv && ok_sf && ok_pv && ok_bf && ok_uf && ok_cf && ok_mv && ok_mf && ok_wv && ok_lv && ok_lf) {
             fmt.eprintln("vk3d: shader load failed (run tools/compile-vk-shaders.sh)")
             return nil
         }
@@ -1576,6 +1598,8 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
             vk.DestroyShaderModule(r.device, mesh_vert, nil)
             vk.DestroyShaderModule(r.device, mesh_frag, nil)
             vk.DestroyShaderModule(r.device, shadow_vert, nil)
+            vk.DestroyShaderModule(r.device, line_vert, nil)
+            vk.DestroyShaderModule(r.device, line_frag, nil)
         }
 
         if !vk3d_create_sprite_pipeline(r, sprite_vert, sprite_frag) { return nil }
@@ -1588,6 +1612,7 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
         if !ok { return nil }
         if !vk3d_create_mesh_pipeline(r, mesh_vert, mesh_frag) { return nil }
         if !vk3d_create_shadow_pipeline(r, shadow_vert) { return nil }
+        if !vk3d_create_line_pipeline(r, line_vert, line_frag) { return nil }
     }
 
     return r
@@ -1608,6 +1633,10 @@ vk3d_shutdown :: proc(r: ^VK3D_Renderer) {
         vk.FreeMemory(r.device, f.ubo_memory, nil)
         vk.DestroyBuffer(r.device, f.inst_buf, nil)
         vk.FreeMemory(r.device, f.inst_memory, nil)
+        if f.line_buf != 0 {
+            vk.DestroyBuffer(r.device, f.line_buf, nil)
+            vk.FreeMemory(r.device, f.line_memory, nil)
+        }
         for rb in f.retired {
             vk.DestroyBuffer(r.device, rb.buf, nil)
             vk.FreeMemory(r.device, rb.mem, nil)
@@ -1626,11 +1655,13 @@ vk3d_shutdown :: proc(r: ^VK3D_Renderer) {
     vk.DestroyPipeline(r.device, r.composite_pipeline, nil)
     vk.DestroyPipeline(r.device, r.mesh_pipeline, nil)
     vk.DestroyPipeline(r.device, r.shadow_pipeline, nil)
+    vk.DestroyPipeline(r.device, r.line_pipeline, nil)
     vk.DestroyPipelineLayout(r.device, r.sprite_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.post_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.composite_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.mesh_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.shadow_layout, nil)
+    vk.DestroyPipelineLayout(r.device, r.line_layout, nil)
     vk.DestroyRenderPass(r.device, r.shadow_pass, nil)
     vk.DestroyFramebuffer(r.device, r.shadow_fb, nil)
     vk.DestroyImageView(r.device, r.shadow_view, nil)
@@ -1662,6 +1693,7 @@ vk3d_shutdown :: proc(r: ^VK3D_Renderer) {
 
     delete(r.instances)
     delete(r.lights)
+    delete(r.lines)
     delete(r.desc_cache)
     free(r)
 }
@@ -2068,6 +2100,25 @@ vk3d_end_frame :: proc(r: ^VK3D_Renderer) {
 
     frame := &r.frames[r.frame_index]
     cmd := frame.cmd
+
+    // debug lines: depth-tested, inside the scene pass before it closes
+    if len(r.lines) > 0 {
+        aspect := f32(r.width) / f32(max(r.height, 1))
+        uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:], &r.sun)
+        (^R3D_Frame_Uniforms)(frame.ubo_mapped)^ = uniforms
+
+        vk3d_ensure_line_capacity(r, frame, len(r.lines))
+        dst := ([^]R3D_Debug_Vertex)(frame.line_mapped)[:len(r.lines)]
+        copy(dst, r.lines[:])
+
+        vk.CmdBindPipeline(cmd, .GRAPHICS, r.line_pipeline)
+        vk.CmdBindDescriptorSets(cmd, .GRAPHICS, r.line_layout, 0, 1, &frame.ubo_set, 0, nil)
+        offset := vk.DeviceSize(0)
+        vk.CmdBindVertexBuffers(cmd, 0, 1, &frame.line_buf, &offset)
+        vk.CmdDraw(cmd, u32(len(r.lines)), 1, 0, 0)
+        clear(&r.lines)
+    }
+
     vk.CmdEndRenderPass(cmd) // scene pass -> scene target is SHADER_READ_ONLY
 
     // --- bright pass: scene -> bright_a (half res) ---
@@ -2531,6 +2582,145 @@ vk3d_create_shadow_pipeline :: proc(r: ^VK3D_Renderer, vert: vk.ShaderModule) ->
     }
     if vk.CreateGraphicsPipelines(r.device, 0, 1, &ci, nil, &r.shadow_pipeline) != .SUCCESS {
         fmt.eprintln("vk3d: shadow pipeline creation failed")
+        return false
+    }
+    return true
+}
+
+// ----------------------------------------------------------------------------
+// Debug lines
+// ----------------------------------------------------------------------------
+
+// Grow the per-frame line buffer if needed (same retire pattern as instances).
+@(private)
+vk3d_ensure_line_capacity :: proc(r: ^VK3D_Renderer, f: ^VK3D_Frame, needed: int) {
+    if needed <= f.line_capacity { return }
+    new_cap := max(f.line_capacity * 2, needed)
+    if f.line_buf != 0 {
+        append(&f.retired, VK3D_Retired_Buffer{buf = f.line_buf, mem = f.line_memory})
+    }
+    f.line_buf, f.line_memory = vk3d_create_buffer(
+        r, vk.DeviceSize(new_cap * R3D_DEBUG_VERTEX_STRIDE), {.VERTEX_BUFFER}, {.HOST_VISIBLE, .HOST_COHERENT},
+    )
+    vk.MapMemory(r.device, f.line_memory, 0, vk.DeviceSize(vk.WHOLE_SIZE), {}, &f.line_mapped)
+    f.line_capacity = new_cap
+}
+
+// Queue a world-space debug line. Lines are recorded into the scene pass at
+// end_frame (after all geometry) and cleared — re-submit every frame.
+vk3d_debug_line :: proc(r: ^VK3D_Renderer, a, b: linalg.Vector3f32, color: linalg.Vector4f32) {
+    append(&r.lines, R3D_Debug_Vertex{pos = a, color = color})
+    append(&r.lines, R3D_Debug_Vertex{pos = b, color = color})
+}
+
+// Convenience: wireframe AABB from min/max corners.
+vk3d_debug_aabb :: proc(r: ^VK3D_Renderer, bmin, bmax: linalg.Vector3f32, color: linalg.Vector4f32) {
+    c := [8]linalg.Vector3f32{
+        {bmin.x, bmin.y, bmin.z}, {bmax.x, bmin.y, bmin.z},
+        {bmax.x, bmin.y, bmax.z}, {bmin.x, bmin.y, bmax.z},
+        {bmin.x, bmax.y, bmin.z}, {bmax.x, bmax.y, bmin.z},
+        {bmax.x, bmax.y, bmax.z}, {bmin.x, bmax.y, bmax.z},
+    }
+    edges := [12][2]int{
+        {0, 1}, {1, 2}, {2, 3}, {3, 0}, // bottom
+        {4, 5}, {5, 6}, {6, 7}, {7, 4}, // top
+        {0, 4}, {1, 5}, {2, 6}, {3, 7}, // verticals
+    }
+    for e in edges {
+        vk3d_debug_line(r, c[e[0]], c[e[1]], color)
+    }
+}
+
+// Convenience: RGB axis tripod (x=red, y=green, z=blue).
+vk3d_debug_axes :: proc(r: ^VK3D_Renderer, origin: linalg.Vector3f32, size: f32) {
+    vk3d_debug_line(r, origin, origin + {size, 0, 0}, {1, 0.2, 0.2, 1})
+    vk3d_debug_line(r, origin, origin + {0, size, 0}, {0.2, 1, 0.2, 1})
+    vk3d_debug_line(r, origin, origin + {0, 0, size}, {0.3, 0.5, 1, 1})
+}
+
+@(private)
+vk3d_create_line_pipeline :: proc(r: ^VK3D_Renderer, vert, frag: vk.ShaderModule) -> bool {
+    stages := [2]vk.PipelineShaderStageCreateInfo{
+        {sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.VERTEX}, module = vert, pName = "main"},
+        {sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.FRAGMENT}, module = frag, pName = "main"},
+    }
+    binding := vk.VertexInputBindingDescription{binding = 0, stride = R3D_DEBUG_VERTEX_STRIDE, inputRate = .VERTEX}
+    attrs := [2]vk.VertexInputAttributeDescription{
+        {location = 0, binding = 0, format = .R32G32B32_SFLOAT, offset = u32(offset_of(R3D_Debug_Vertex, pos))},
+        {location = 1, binding = 0, format = .R32G32B32A32_SFLOAT, offset = u32(offset_of(R3D_Debug_Vertex, color))},
+    }
+    vi := vk.PipelineVertexInputStateCreateInfo{
+        sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        vertexBindingDescriptionCount   = 1,
+        pVertexBindingDescriptions      = &binding,
+        vertexAttributeDescriptionCount = 2,
+        pVertexAttributeDescriptions    = &attrs[0],
+    }
+    ia := vk.PipelineInputAssemblyStateCreateInfo{
+        sType    = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        topology = .LINE_LIST,
+    }
+    vp := vk.PipelineViewportStateCreateInfo{
+        sType         = .PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        viewportCount = 1,
+        scissorCount  = 1,
+    }
+    rs := vk.PipelineRasterizationStateCreateInfo{
+        sType       = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        polygonMode = .FILL,
+        cullMode    = {},
+        frontFace   = .COUNTER_CLOCKWISE,
+        lineWidth   = 1.0,
+    }
+    ms := vk.PipelineMultisampleStateCreateInfo{
+        sType                = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        rasterizationSamples = {._1},
+    }
+    ds := vk.PipelineDepthStencilStateCreateInfo{
+        sType            = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        depthTestEnable  = true,
+        depthWriteEnable = false,
+        depthCompareOp   = .LESS,
+    }
+    blend_att := vk.PipelineColorBlendAttachmentState{
+        blendEnable         = true,
+        srcColorBlendFactor = .SRC_ALPHA,
+        dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA,
+        colorBlendOp        = .ADD,
+        srcAlphaBlendFactor = .ONE,
+        dstAlphaBlendFactor = .ZERO,
+        alphaBlendOp        = .ADD,
+        colorWriteMask      = {.R, .G, .B, .A},
+    }
+    cb := vk.PipelineColorBlendStateCreateInfo{
+        sType           = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        attachmentCount = 1,
+        pAttachments    = &blend_att,
+    }
+    dyn_states := [2]vk.DynamicState{.VIEWPORT, .SCISSOR}
+    dyn := vk.PipelineDynamicStateCreateInfo{
+        sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        dynamicStateCount = 2,
+        pDynamicStates    = &dyn_states[0],
+    }
+    ci := vk.GraphicsPipelineCreateInfo{
+        sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
+        stageCount          = 2,
+        pStages             = &stages[0],
+        pVertexInputState   = &vi,
+        pInputAssemblyState = &ia,
+        pViewportState      = &vp,
+        pRasterizationState = &rs,
+        pMultisampleState   = &ms,
+        pDepthStencilState  = &ds,
+        pColorBlendState    = &cb,
+        pDynamicState       = &dyn,
+        layout              = r.line_layout,
+        renderPass          = r.scene_pass,
+        subpass             = 0,
+    }
+    if vk.CreateGraphicsPipelines(r.device, 0, 1, &ci, nil, &r.line_pipeline) != .SUCCESS {
+        fmt.eprintln("vk3d: line pipeline creation failed")
         return false
     }
     return true
