@@ -15,10 +15,6 @@ layout(set=0, binding=0, std140) uniform Frame {
     vec4 u_light_pos[16];
     vec4 u_light_color[16];
     vec4 u_meta;
-    mat4 u_light_view_proj;
-    vec4 u_sun_dir;
-    vec4 u_sun_color;
-    vec4 u_shadow_params;
 };
 
 layout(set=1, binding=0) uniform sampler2D u_diffuse;
@@ -29,28 +25,6 @@ layout(push_constant) uniform Push {
 } pc;
 
 layout(location=0) out vec4 frag_color;
-
-
-layout(set=0, binding=1) uniform sampler2D u_shadow_map;
-
-float shadow_factor(vec3 world) {
-    if (u_shadow_params.x < 0.5) return 1.0;
-    vec4 lp = u_light_view_proj * vec4(world, 1.0);
-    vec3 proj = lp.xyz / lp.w;
-    vec2 suv = proj.xy * 0.5 + 0.5;
-    if (suv.x <= 0.0 || suv.x >= 1.0 || suv.y <= 0.0 || suv.y >= 1.0) return 1.0;
-    float current = u_shadow_params.w > 0.5 ? proj.z * 0.5 + 0.5 : proj.z;
-    float bias  = u_shadow_params.y;
-    float texel = u_shadow_params.z;
-    float sum = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            float d = texture(u_shadow_map, suv + vec2(x, y) * texel).r;
-            sum += (current - bias > d) ? 0.0 : 1.0;
-        }
-    }
-    return sum / 9.0;
-}
 
 void main() {
     vec4 tex = texture(u_diffuse, v_uv);
@@ -89,14 +63,6 @@ void main() {
         spec_acc += lc * pow(max(dot(N, H), 0.0), shininess) * att;
     }
 
-    // sun (directional, shadowed)
-    {
-        vec3 sunL = normalize(-u_sun_dir.xyz);
-        float shadow = shadow_factor(v_world);
-        diffuse_acc += u_sun_color.rgb * max(dot(N, sunL), 0.0) * shadow;
-        vec3 Hs = normalize(sunL + V);
-        spec_acc += u_sun_color.rgb * pow(max(dot(N, Hs), 0.0), shininess) * shadow;
-    }
     vec3 lit = base.rgb * diffuse_acc;
     lit += spec_acc * spec_strength;
     lit += base.rgb * emissive;

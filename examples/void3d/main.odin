@@ -84,34 +84,6 @@ r_draw_mesh :: proc(r: ^Renderer, mesh: ^MeshHandle, tex: TexHandle, model: lina
     }
 }
 
-r_set_sun :: proc(r: ^Renderer, sun: ve.R3D_Sun) {
-    switch r.backend {
-    case .GL: ve.gl3d_set_sun(r.gl, sun)
-    case .VK: ve.vk3d_set_sun(r.vk, sun)
-    }
-}
-
-r_shadow_pass_begin :: proc(r: ^Renderer, center: linalg.Vector3f32) {
-    switch r.backend {
-    case .GL: ve.gl3d_shadow_pass_begin(r.gl, center)
-    case .VK: ve.vk3d_shadow_pass_begin(r.vk, center)
-    }
-}
-
-r_draw_mesh_shadow :: proc(r: ^Renderer, mesh: ^MeshHandle, model: linalg.Matrix4f32) {
-    switch r.backend {
-    case .GL: ve.gl3d_draw_mesh_shadow(r.gl, &mesh.gl, model)
-    case .VK: ve.vk3d_draw_mesh_shadow(r.vk, &mesh.vk, model)
-    }
-}
-
-r_shadow_pass_end :: proc(r: ^Renderer) {
-    switch r.backend {
-    case .GL: ve.gl3d_shadow_pass_end(r.gl)
-    case .VK: ve.vk3d_shadow_pass_end(r.vk)
-    }
-}
-
 r_set_camera :: proc(r: ^Renderer, cam: ^ve.R3D_Camera) {
     switch r.backend {
     case .GL: ve.gl3d_set_camera(r.gl, cam)
@@ -306,14 +278,6 @@ game_init :: proc(e: ^ve.Engine) {
     g.exposure = 1.1
 
     r_set_ambient(&g.r, {0.10, 0.07, 0.16})
-
-    // sunset sun: low, warm, casts obelisk/dais shadows
-    r_set_sun(&g.r, ve.R3D_Sun{
-        direction    = {0.55, -0.45, 0.70},
-        color        = {2.8, 1.5, 0.75},
-        enabled      = true,
-        cast_shadows = true,
-    })
     fmt.println("void3d ready — backend:", g.r.backend)
 }
 
@@ -380,14 +344,6 @@ game_render :: proc(e: ^ve.Engine, _: ^SDL.Renderer) {
     g.cam.yaw   = f32(math.atan2(dir.x, -dir.z))
     g.cam.pitch = f32(math.asin(dir.y / dir_len))
 
-    // --- shadow pass: sun depth from casters (before the scene pass) ---
-    dais_model := linalg.matrix4_translate(linalg.Vector3f32{0, 0.15, 0}) * linalg.matrix4_scale(linalg.Vector3f32{3.5, 0.3, 3.5})
-    obelisk_model := linalg.matrix4_translate(linalg.Vector3f32{0, 2.3, 0}) * linalg.matrix4_rotate(t * 0.7, linalg.Vector3f32{0, 1, 0})
-    r_shadow_pass_begin(&g.r, {0, 0, 0})
-    r_draw_mesh_shadow(&g.r, &g.dais, dais_model)
-    r_draw_mesh_shadow(&g.r, &g.obelisk, obelisk_model)
-    r_shadow_pass_end(&g.r)
-
     if !r_begin_frame(&g.r) {
         return  // vk swapchain out of date; skip
     }
@@ -450,6 +406,7 @@ game_render :: proc(e: ^ve.Engine, _: ^SDL.Renderer) {
     dais_opts.uv_tiling = {7, 7}
     dais_opts.spec_strength = 0.9
     dais_opts.shininess = 48
+    dais_model := linalg.matrix4_translate(linalg.Vector3f32{0, 0.15, 0}) * linalg.matrix4_scale(linalg.Vector3f32{3.5, 0.3, 3.5})
     r_draw_mesh(&g.r, &g.dais, g.grid.diffuse, dais_model, dais_opts)
 
     // --- obelisk: spinning faceted crystal mesh above the dais ---
@@ -457,6 +414,7 @@ game_render :: proc(e: ^ve.Engine, _: ^SDL.Renderer) {
     obelisk_opts.emissive = 0.45
     obelisk_opts.spec_strength = 1.3
     obelisk_opts.shininess = 96
+    obelisk_model := linalg.matrix4_translate(linalg.Vector3f32{0, 2.3, 0}) * linalg.matrix4_rotate(t * 0.7, linalg.Vector3f32{0, 1, 0})
     r_draw_mesh(&g.r, &g.obelisk, g.crystal.diffuse, obelisk_model, obelisk_opts)
 
     // --- center: spinning rune ring (halo above the obelisk) ---

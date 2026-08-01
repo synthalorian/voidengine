@@ -80,13 +80,6 @@ GL3D_Renderer :: struct {
     bloom_threshold:    f32,
     exposure:           f32,
     vignette:           f32,
-
-    // sun + shadows
-    sun:                R3D_Sun,
-    shadow_fbo:         u32,
-    shadow_tex:         u32,
-    shadow_prog:        u32,
-    shadow_res:         i32,
 }
 
 // ----------------------------------------------------------------------------
@@ -106,15 +99,11 @@ layout(location=8) in vec4 a_params;
 
 layout(std140) uniform Frame {
     mat4 u_view_proj;
-    mat4 u_light_view_proj;
     vec4 u_camera_pos;
     vec4 u_ambient;
     vec4 u_light_pos[16];
     vec4 u_light_color[16];
     vec4 u_meta;
-    vec4 u_sun_dir;
-    vec4 u_sun_color;
-    vec4 u_shadow_params;
 };
 
 out vec2 v_uv;
@@ -147,41 +136,17 @@ in vec4 v_params;
 uniform sampler2D u_diffuse;
 uniform sampler2D u_normal_map;
 uniform int u_use_normal_map;
-uniform sampler2D u_shadow_map;
 
 layout(std140) uniform Frame {
     mat4 u_view_proj;
-    mat4 u_light_view_proj;
     vec4 u_camera_pos;
     vec4 u_ambient;
     vec4 u_light_pos[16];
     vec4 u_light_color[16];
     vec4 u_meta;
-    vec4 u_sun_dir;
-    vec4 u_sun_color;
-    vec4 u_shadow_params;
 };
 
 out vec4 frag_color;
-
-float shadow_factor(vec3 world) {
-    if (u_shadow_params.x < 0.5) return 1.0;
-    vec4 lp = u_light_view_proj * vec4(world, 1.0);
-    vec3 proj = lp.xyz / lp.w;
-    vec2 suv = proj.xy * 0.5 + 0.5;
-    if (suv.x <= 0.0 || suv.x >= 1.0 || suv.y <= 0.0 || suv.y >= 1.0) return 1.0;
-    float current = u_shadow_params.w > 0.5 ? proj.z * 0.5 + 0.5 : proj.z;
-    float bias  = u_shadow_params.y;
-    float texel = u_shadow_params.z;
-    float sum = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            float d = texture(u_shadow_map, suv + vec2(x, y) * texel).r;
-            sum += (current - bias > d) ? 0.0 : 1.0;
-        }
-    }
-    return sum / 9.0;
-}
 
 void main() {
     vec4 tex = texture(u_diffuse, v_uv);
@@ -221,32 +186,11 @@ void main() {
         spec_acc += lc * pow(max(dot(N, H), 0.0), shininess) * att;
     }
 
-    // sun (directional, shadowed)
-    {
-        vec3 sunL = normalize(-u_sun_dir.xyz);
-        float shadow = shadow_factor(v_world);
-        diffuse_acc += u_sun_color.rgb * max(dot(N, sunL), 0.0) * shadow;
-        vec3 Hs = normalize(sunL + V);
-        spec_acc += u_sun_color.rgb * pow(max(dot(N, Hs), 0.0), shininess) * shadow;
-    }
     vec3 lit = base.rgb * diffuse_acc;
     lit += spec_acc * spec_strength;
     lit += base.rgb * emissive;
     frag_color = vec4(lit, base.a);
 }
-`
-
-GL3D_SHADOW_VERT :: `#version 330 core
-layout(location=0) in vec3 a_pos;
-uniform mat4 u_light_vp;
-uniform mat4 u_model;
-void main() {
-    gl_Position = u_light_vp * u_model * vec4(a_pos, 1.0);
-}
-`
-
-GL3D_SHADOW_FRAG :: `#version 330 core
-void main() {}
 `
 
 GL3D_POST_VERT :: `#version 330 core
@@ -391,8 +335,6 @@ gl3d_init :: proc(width, height: i32) -> ^GL3D_Renderer {
     r.composite_prog, ok = gl3d_build_program(GL3D_POST_VERT, GL3D_COMPOSITE_FRAG)
     if !ok { return nil }
     if !gl3d_init_mesh_pipeline(r) { return nil }
-    r.shadow_prog, ok = gl3d_build_program(GL3D_SHADOW_VERT, GL3D_SHADOW_FRAG)
-    if !ok { return nil }
 
     // UBO: frame uniforms at binding point 0 in both sprite programs
     gl.GenBuffers(1, &r.ubo)
@@ -403,7 +345,6 @@ gl3d_init :: proc(width, height: i32) -> ^GL3D_Renderer {
     if block_idx != gl.INVALID_INDEX {
         gl.UniformBlockBinding(r.sprite_prog, block_idx, 0)
     }
-
 
     // --- sprite quad geometry (corner + uv interleaved, 4 verts) ---
     // uv y=0 maps to the first uploaded row (top of a PNG), so v is flipped
@@ -497,28 +438,6 @@ gl3d_init :: proc(width, height: i32) -> ^GL3D_Renderer {
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
-    // shadow map depth target
-    r.shadow_res = 2048
-    gl.GenTextures(1, &r.shadow_tex)
-    gl.BindTexture(gl.TEXTURE_2D, r.shadow_tex)
-    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, r.shadow_res, r.shadow_res, 0, gl.DEPTH_COMPONENT, gl.FLOAT, nil)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    gl.GenFramebuffers(1, &r.shadow_fbo)
-    gl.BindFramebuffer(gl.FRAMEBUFFER, r.shadow_fbo)
-    gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, r.shadow_tex, 0)
-    gl.DrawBuffer(gl.NONE)
-    gl.ReadBuffer(gl.NONE)
-    gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
-
-    // shadow map sampler binding is fixed at unit 2 in both lit programs
-    gl.UseProgram(r.sprite_prog)
-    gl.Uniform1i(gl.GetUniformLocation(r.sprite_prog, "u_shadow_map"), 2)
-    gl.UseProgram(r.mesh_prog)
-    gl.Uniform1i(gl.GetUniformLocation(r.mesh_prog, "u_shadow_map"), 2)
-
     gl3d_create_targets(r, width, height)
     return r
 }
@@ -605,9 +524,6 @@ gl3d_shutdown :: proc(r: ^GL3D_Renderer) {
     gl.DeleteProgram(r.blur_prog)
     gl.DeleteProgram(r.composite_prog)
     gl.DeleteProgram(r.mesh_prog)
-    gl.DeleteProgram(r.shadow_prog)
-    gl.DeleteFramebuffers(1, &r.shadow_fbo)
-    gl.DeleteTextures(1, &r.shadow_tex)
     delete(r.instances)
     delete(r.lights)
     free(r)
@@ -747,7 +663,7 @@ gl3d_flush :: proc(r: ^GL3D_Renderer) {
 
     // frame uniforms
     aspect := f32(r.width) / f32(max(r.height, 1))
-    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:], &r.sun)
+    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:])
     gl.BindBuffer(gl.UNIFORM_BUFFER, r.ubo)
     gl.BufferSubData(gl.UNIFORM_BUFFER, 0, size_of(R3D_Frame_Uniforms), &uniforms)
 
@@ -757,9 +673,6 @@ gl3d_flush :: proc(r: ^GL3D_Renderer) {
     gl.BindTexture(gl.TEXTURE_2D, r.cur_diffuse)
     gl.ActiveTexture(gl.TEXTURE1)
     gl.BindTexture(gl.TEXTURE_2D, normal_tex)
-    gl.ActiveTexture(gl.TEXTURE2)
-    gl.BindTexture(gl.TEXTURE_2D, r.shadow_tex)
-    gl.ActiveTexture(gl.TEXTURE0)
 
     // stream instances (orphan + upload)
     gl.BindBuffer(gl.ARRAY_BUFFER, r.inst_vbo)
@@ -848,15 +761,11 @@ layout(location=2) in vec2 a_uv;
 
 layout(std140) uniform Frame {
     mat4 u_view_proj;
-    mat4 u_light_view_proj;
     vec4 u_camera_pos;
     vec4 u_ambient;
     vec4 u_light_pos[16];
     vec4 u_light_color[16];
     vec4 u_meta;
-    vec4 u_sun_dir;
-    vec4 u_sun_color;
-    vec4 u_shadow_params;
 };
 
 uniform mat4 u_model;
@@ -890,41 +799,17 @@ in vec4 v_params;
 
 uniform sampler2D u_diffuse;
 uniform int u_has_texture;
-uniform sampler2D u_shadow_map;
 
 layout(std140) uniform Frame {
     mat4 u_view_proj;
-    mat4 u_light_view_proj;
     vec4 u_camera_pos;
     vec4 u_ambient;
     vec4 u_light_pos[16];
     vec4 u_light_color[16];
     vec4 u_meta;
-    vec4 u_sun_dir;
-    vec4 u_sun_color;
-    vec4 u_shadow_params;
 };
 
 out vec4 frag_color;
-
-float shadow_factor(vec3 world) {
-    if (u_shadow_params.x < 0.5) return 1.0;
-    vec4 lp = u_light_view_proj * vec4(world, 1.0);
-    vec3 proj = lp.xyz / lp.w;
-    vec2 suv = proj.xy * 0.5 + 0.5;
-    if (suv.x <= 0.0 || suv.x >= 1.0 || suv.y <= 0.0 || suv.y >= 1.0) return 1.0;
-    float current = u_shadow_params.w > 0.5 ? proj.z * 0.5 + 0.5 : proj.z;
-    float bias  = u_shadow_params.y;
-    float texel = u_shadow_params.z;
-    float sum = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            float d = texture(u_shadow_map, suv + vec2(x, y) * texel).r;
-            sum += (current - bias > d) ? 0.0 : 1.0;
-        }
-    }
-    return sum / 9.0;
-}
 
 void main() {
     vec4 base = v_color;
@@ -955,14 +840,6 @@ void main() {
         spec_acc += lc * pow(max(dot(N, H), 0.0), shininess) * att;
     }
 
-    // sun (directional, shadowed)
-    {
-        vec3 sunL = normalize(-u_sun_dir.xyz);
-        float shadow = shadow_factor(v_world);
-        diffuse_acc += u_sun_color.rgb * max(dot(N, sunL), 0.0) * shadow;
-        vec3 Hs = normalize(sunL + V);
-        spec_acc += u_sun_color.rgb * pow(max(dot(N, Hs), 0.0), shininess) * shadow;
-    }
     vec3 lit = base.rgb * diffuse_acc;
     lit += spec_acc * spec_strength;
     lit += base.rgb * emissive;
@@ -1019,7 +896,7 @@ gl3d_draw_mesh_opts :: proc(r: ^GL3D_Renderer, mesh: ^GL3D_Mesh, texture: u32, m
     gl.UseProgram(r.mesh_prog)
 
     aspect := f32(r.width) / f32(max(r.height, 1))
-    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:], &r.sun)
+    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:])
     gl.BindBuffer(gl.UNIFORM_BUFFER, r.ubo)
     gl.BufferSubData(gl.UNIFORM_BUFFER, 0, size_of(R3D_Frame_Uniforms), &uniforms)
 
@@ -1034,9 +911,6 @@ gl3d_draw_mesh_opts :: proc(r: ^GL3D_Renderer, mesh: ^GL3D_Mesh, texture: u32, m
 
     gl.ActiveTexture(gl.TEXTURE0)
     gl.BindTexture(gl.TEXTURE_2D, texture)
-    gl.ActiveTexture(gl.TEXTURE2)
-    gl.BindTexture(gl.TEXTURE_2D, r.shadow_tex)
-    gl.ActiveTexture(gl.TEXTURE0)
 
     gl.BindVertexArray(mesh.vao)
     gl.DrawElements(gl.TRIANGLES, mesh.index_count, gl.UNSIGNED_INT, nil)
@@ -1046,49 +920,6 @@ gl3d_draw_mesh_opts :: proc(r: ^GL3D_Renderer, mesh: ^GL3D_Mesh, texture: u32, m
 // Draw a mesh with default options.
 gl3d_draw_mesh :: proc(r: ^GL3D_Renderer, mesh: ^GL3D_Mesh, texture: u32, model: linalg.Matrix4f32) {
     gl3d_draw_mesh_opts(r, mesh, texture, model, r3d_default_mesh_options())
-}
-
-// ----------------------------------------------------------------------------
-// Shadow pass (sun): depth-only rendering of shadow casters from the sun's
-// orthographic view. Call BEFORE gl3d_begin_frame; draw casters with
-// gl3d_draw_mesh_shadow; then begin the normal frame.
-// ----------------------------------------------------------------------------
-
-gl3d_set_sun :: proc(r: ^GL3D_Renderer, sun: R3D_Sun) {
-    r.sun = sun
-    if r.sun.shadow_bias == 0 { r.sun.shadow_bias = 0.0025 }
-    if r.sun.shadow_radius == 0 { r.sun.shadow_radius = 12 }
-}
-
-gl3d_shadow_pass_begin :: proc(r: ^GL3D_Renderer, center: linalg.Vector3f32) {
-    if !r.sun.enabled || !r.sun.cast_shadows { return }
-    r3d_sun_view_proj(&r.sun, center, false)
-    r.sun.shadow_texel = 1.0 / f32(r.shadow_res)
-
-    gl.BindFramebuffer(gl.FRAMEBUFFER, r.shadow_fbo)
-    gl.Viewport(0, 0, r.shadow_res, r.shadow_res)
-    gl.Enable(gl.DEPTH_TEST)
-    gl.Disable(gl.BLEND)
-    gl.Clear(gl.DEPTH_BUFFER_BIT)
-    gl.Enable(gl.POLYGON_OFFSET_FILL)
-    gl.PolygonOffset(2.0, 4.0)
-    gl.UseProgram(r.shadow_prog)
-    lvp := r.sun.light_view_proj
-    gl.UniformMatrix4fv(gl.GetUniformLocation(r.shadow_prog, "u_light_vp"), 1, false, &lvp[0][0])
-}
-
-gl3d_draw_mesh_shadow :: proc(r: ^GL3D_Renderer, mesh: ^GL3D_Mesh, model: linalg.Matrix4f32) {
-    if !r.sun.enabled || !r.sun.cast_shadows || mesh.index_count == 0 { return }
-    m := model
-    gl.UniformMatrix4fv(gl.GetUniformLocation(r.shadow_prog, "u_model"), 1, false, &m[0][0])
-    gl.BindVertexArray(mesh.vao)
-    gl.DrawElements(gl.TRIANGLES, mesh.index_count, gl.UNSIGNED_INT, nil)
-    gl.BindVertexArray(0)
-}
-
-gl3d_shadow_pass_end :: proc(r: ^GL3D_Renderer) {
-    gl.Disable(gl.POLYGON_OFFSET_FILL)
-    // gl3d_begin_frame rebinds the scene target, viewport, and state
 }
 
 // Init the mesh program (called from gl3d_init).
