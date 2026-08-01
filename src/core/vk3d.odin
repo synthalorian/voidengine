@@ -66,6 +66,12 @@ VK3D_Mesh_Push :: struct {
     misc:   linalg.Vector4f32, // uv_tiling.xy
 }
 
+// Queued shadow-caster draw (recorded at begin_frame from the sun's view).
+VK3D_Shadow_Draw :: struct {
+    mesh:  VK3D_Mesh,
+    model: linalg.Matrix4f32,
+}
+
 // Offscreen render target (color image + view + framebuffer + post descriptor).
 VK3D_Target :: struct {
     image:       vk.Image,
@@ -165,6 +171,17 @@ VK3D_Renderer :: struct {
     composite_pipeline: vk.Pipeline,
     mesh_layout:        vk.PipelineLayout,
     mesh_pipeline:      vk.Pipeline,
+    shadow_pass:        vk.RenderPass,
+    shadow_layout:      vk.PipelineLayout,
+    shadow_pipeline:    vk.Pipeline,
+    shadow_image:       vk.Image,
+    shadow_memory:      vk.DeviceMemory,
+    shadow_view:        vk.ImageView,
+    shadow_fb:          vk.Framebuffer,
+    sampler_shadow:     vk.Sampler,
+    shadow_res:         i32,
+    sun:                R3D_Sun,
+    shadow_draws:       [dynamic]VK3D_Shadow_Draw,
 
     // static geometry
     quad_vbo:         vk.Buffer,
@@ -726,6 +743,57 @@ vk3d_create_render_passes :: proc(r: ^VK3D_Renderer) -> bool {
             return false
         }
     }
+
+    // --- shadow pass: D32 depth only, ends DEPTH_STENCIL_READ_ONLY ---
+    {
+        attachment := vk.AttachmentDescription{
+            format         = .D32_SFLOAT,
+            samples        = {._1},
+            loadOp         = .CLEAR,
+            storeOp        = .STORE,
+            stencilLoadOp  = .DONT_CARE,
+            stencilStoreOp = .DONT_CARE,
+            initialLayout  = .UNDEFINED,
+            finalLayout    = .DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        }
+        depth_ref := vk.AttachmentReference{attachment = 0, layout = .DEPTH_STENCIL_ATTACHMENT_OPTIMAL}
+        subpass := vk.SubpassDescription{
+            pipelineBindPoint       = .GRAPHICS,
+            colorAttachmentCount    = 0,
+            pDepthStencilAttachment = &depth_ref,
+        }
+        deps := [2]vk.SubpassDependency{
+            {
+                srcSubpass    = vk.SUBPASS_EXTERNAL,
+                dstSubpass    = 0,
+                srcStageMask  = {.FRAGMENT_SHADER},
+                dstStageMask  = {.EARLY_FRAGMENT_TESTS},
+                srcAccessMask = {.SHADER_READ},
+                dstAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
+            },
+            {
+                srcSubpass    = 0,
+                dstSubpass    = vk.SUBPASS_EXTERNAL,
+                srcStageMask  = {.LATE_FRAGMENT_TESTS},
+                dstStageMask  = {.FRAGMENT_SHADER},
+                srcAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
+                dstAccessMask = {.SHADER_READ},
+            },
+        }
+        ci := vk.RenderPassCreateInfo{
+            sType           = .RENDER_PASS_CREATE_INFO,
+            attachmentCount = 1,
+            pAttachments    = &attachment,
+            subpassCount    = 1,
+            pSubpasses      = &subpass,
+            dependencyCount = 2,
+            pDependencies   = &deps[0],
+        }
+        if vk.CreateRenderPass(r.device, &ci, nil, &r.shadow_pass) != .SUCCESS {
+            fmt.eprintln("vk3d: shadow render pass failed")
+            return false
+        }
+    }
     return true
 }
 
@@ -1129,6 +1197,7 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
     r.lights    = make([dynamic]R3D_Light)
     r.desc_cache = make(map[VK3D_Tex_Key]vk.DescriptorSet)
     r.mesh_tex_cache = make(map[vk.ImageView]vk.DescriptorSet)
+    r.shadow_draws = make([dynamic]VK3D_Shadow_Draw)
 
     // sensible synthwave defaults (same as gl3d)
     r.ambient         = {0.10, 0.07, 0.16}
@@ -1253,10 +1322,14 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
             descriptorCount = 1,
             stageFlags      = {.VERTEX, .FRAGMENT},
         }
+        frame_bindings := [2]vk.DescriptorSetLayoutBinding{
+            frame_binding,
+            {binding = 1, descriptorType = .COMBINED_IMAGE_SAMPLER, descriptorCount = 1, stageFlags = {.FRAGMENT}},
+        }
         ci := vk.DescriptorSetLayoutCreateInfo{
             sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            bindingCount = 1,
-            pBindings    = &frame_binding,
+            bindingCount = 2,
+            pBindings    = &frame_bindings[0],
         }
         if vk.CreateDescriptorSetLayout(r.device, &ci, nil, &r.frame_set_layout) != .SUCCESS {
             fmt.eprintln("vk3d: frame set layout failed")
@@ -1356,16 +1429,30 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
             fmt.eprintln("vk3d: mesh pipeline layout failed")
             return nil
         }
+
+        // shadow: set 0 frame UBO (+shadow sampler), push const model only
+        shadow_sets := [1]vk.DescriptorSetLayout{r.frame_set_layout}
+        shadow_push := vk.PushConstantRange{stageFlags = {.VERTEX}, offset = 0, size = 64}
+        ci.setLayoutCount      = 1
+        ci.pSetLayouts         = &shadow_sets[0]
+        ci.pushConstantRangeCount = 1
+        ci.pPushConstantRanges = &shadow_push
+        if vk.CreatePipelineLayout(r.device, &ci, nil, &r.shadow_layout) != .SUCCESS {
+            fmt.eprintln("vk3d: shadow pipeline layout failed")
+            return nil
+        }
     }
 
     // --- samplers ---
     r.sampler_repeat = vk3d_create_sampler(r, .REPEAT)
     r.sampler_clamp  = vk3d_create_sampler(r, .CLAMP_TO_EDGE)
+    r.sampler_shadow = vk3d_create_shadow_sampler(r)
 
     // --- swapchain + render passes + offscreen targets ---
     if !vk3d_create_swapchain(r) { return nil }
     if !vk3d_create_render_passes(r) { return nil }
     vk3d_create_size_dependent(r)
+    vk3d_create_shadow_target(r)
 
     // --- frames in flight ---
     for i in 0 ..< VK3D_FRAMES_IN_FLIGHT {
@@ -1404,6 +1491,22 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
             pBufferInfo     = &buf_info,
         }
         vk.UpdateDescriptorSets(r.device, 1, &write, 0, nil)
+
+        // binding 1: shadow map sampler (same image for all frames)
+        shadow_info := vk.DescriptorImageInfo{
+            sampler     = r.sampler_shadow,
+            imageView   = r.shadow_view,
+            imageLayout = .DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        }
+        shadow_write := vk.WriteDescriptorSet{
+            sType           = .WRITE_DESCRIPTOR_SET,
+            dstSet          = set,
+            dstBinding      = 1,
+            descriptorCount = 1,
+            descriptorType  = .COMBINED_IMAGE_SAMPLER,
+            pImageInfo      = &shadow_info,
+        }
+        vk.UpdateDescriptorSets(r.device, 1, &shadow_write, 0, nil)
 
         f.inst_capacity = VK3D_INITIAL_INSTANCES
         f.inst_buf, f.inst_memory = vk3d_create_buffer(
@@ -1458,7 +1561,8 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
         comp_frag,   ok_cf := vk3d_load_shader_module(r, shader_dir, "vk_composite.frag")
         mesh_vert,   ok_mv := vk3d_load_shader_module(r, shader_dir, "vk_mesh.vert")
         mesh_frag,   ok_mf := vk3d_load_shader_module(r, shader_dir, "vk_mesh.frag")
-        if !(ok_sv && ok_sf && ok_pv && ok_bf && ok_uf && ok_cf && ok_mv && ok_mf) {
+        shadow_vert, ok_wv := vk3d_load_shader_module(r, shader_dir, "vk_shadow.vert")
+        if !(ok_sv && ok_sf && ok_pv && ok_bf && ok_uf && ok_cf && ok_mv && ok_mf && ok_wv) {
             fmt.eprintln("vk3d: shader load failed (run tools/compile-vk-shaders.sh)")
             return nil
         }
@@ -1471,6 +1575,7 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
             vk.DestroyShaderModule(r.device, comp_frag, nil)
             vk.DestroyShaderModule(r.device, mesh_vert, nil)
             vk.DestroyShaderModule(r.device, mesh_frag, nil)
+            vk.DestroyShaderModule(r.device, shadow_vert, nil)
         }
 
         if !vk3d_create_sprite_pipeline(r, sprite_vert, sprite_frag) { return nil }
@@ -1482,6 +1587,7 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
         r.composite_pipeline, ok = vk3d_create_post_pipeline(r, post_vert, comp_frag, r.composite_layout, r.composite_pass)
         if !ok { return nil }
         if !vk3d_create_mesh_pipeline(r, mesh_vert, mesh_frag) { return nil }
+        if !vk3d_create_shadow_pipeline(r, shadow_vert) { return nil }
     }
 
     return r
@@ -1519,10 +1625,19 @@ vk3d_shutdown :: proc(r: ^VK3D_Renderer) {
     vk.DestroyPipeline(r.device, r.blur_pipeline, nil)
     vk.DestroyPipeline(r.device, r.composite_pipeline, nil)
     vk.DestroyPipeline(r.device, r.mesh_pipeline, nil)
+    vk.DestroyPipeline(r.device, r.shadow_pipeline, nil)
     vk.DestroyPipelineLayout(r.device, r.sprite_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.post_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.composite_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.mesh_layout, nil)
+    vk.DestroyPipelineLayout(r.device, r.shadow_layout, nil)
+    vk.DestroyRenderPass(r.device, r.shadow_pass, nil)
+    vk.DestroyFramebuffer(r.device, r.shadow_fb, nil)
+    vk.DestroyImageView(r.device, r.shadow_view, nil)
+    vk.DestroyImage(r.device, r.shadow_image, nil)
+    vk.FreeMemory(r.device, r.shadow_memory, nil)
+    vk.DestroySampler(r.device, r.sampler_shadow, nil)
+    delete(r.shadow_draws)
 
     vk3d_destroy_size_dependent(r)
 
@@ -1810,6 +1925,9 @@ vk3d_begin_frame :: proc(r: ^VK3D_Renderer) -> bool {
     }
     vk.BeginCommandBuffer(frame.cmd, &bi)
 
+    // sun shadow pass (queued casters) renders before the scene
+    vk3d_record_shadow_pass(r, frame)
+
     clears := [2]vk.ClearValue{
         {color = {float32 = {0.02, 0.01, 0.05, 1.0}}},
         {depthStencil = {depth = 1.0, stencil = 0}},
@@ -1876,7 +1994,7 @@ vk3d_flush :: proc(r: ^VK3D_Renderer) {
     // of the frame applies to all batches, so set camera/lights before drawing
     // (same as typical gl3d usage).
     aspect := f32(r.width) / f32(max(r.height, 1))
-    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:])
+    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:], &r.sun)
     (^R3D_Frame_Uniforms)(frame.ubo_mapped)^ = uniforms
 
     // stream instances into the per-frame buffer AFTER previously flushed
@@ -2116,7 +2234,7 @@ vk3d_draw_mesh_opts :: proc(r: ^VK3D_Renderer, mesh: ^VK3D_Mesh, texture: VK3D_T
 
     // frame uniforms (same values as sprite batches this frame)
     aspect := f32(r.width) / f32(max(r.height, 1))
-    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:])
+    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:], &r.sun)
     (^R3D_Frame_Uniforms)(frame.ubo_mapped)^ = uniforms
 
     tex := texture
@@ -2237,6 +2355,182 @@ vk3d_create_mesh_pipeline :: proc(r: ^VK3D_Renderer, vert, frag: vk.ShaderModule
     }
     if vk.CreateGraphicsPipelines(r.device, 0, 1, &ci, nil, &r.mesh_pipeline) != .SUCCESS {
         fmt.eprintln("vk3d: mesh pipeline creation failed")
+        return false
+    }
+    return true
+}
+
+// ----------------------------------------------------------------------------
+// Shadow pass (sun): depth-only rendering of queued casters from the sun's
+// orthographic view. Queue casters with vk3d_draw_mesh_shadow BEFORE
+// vk3d_begin_frame; the pass is recorded at the top of the frame.
+// ----------------------------------------------------------------------------
+
+@(private)
+vk3d_create_shadow_sampler :: proc(r: ^VK3D_Renderer) -> vk.Sampler {
+    sci := vk.SamplerCreateInfo{
+        sType        = .SAMPLER_CREATE_INFO,
+        magFilter    = .NEAREST,
+        minFilter    = .NEAREST,
+        mipmapMode   = .NEAREST,
+        addressModeU = .CLAMP_TO_EDGE,
+        addressModeV = .CLAMP_TO_EDGE,
+        addressModeW = .CLAMP_TO_EDGE,
+        minLod       = 0,
+        maxLod       = 0,
+    }
+    sampler: vk.Sampler
+    vk.CreateSampler(r.device, &sci, nil, &sampler)
+    return sampler
+}
+
+@(private)
+vk3d_create_shadow_target :: proc(r: ^VK3D_Renderer) {
+    r.shadow_res = 2048
+    r.shadow_image, r.shadow_memory = vk3d_create_image(
+        r, u32(r.shadow_res), u32(r.shadow_res), .D32_SFLOAT, {.DEPTH_STENCIL_ATTACHMENT, .SAMPLED},
+    )
+    r.shadow_view = vk3d_create_image_view(r, r.shadow_image, .D32_SFLOAT, {.DEPTH})
+    fbci := vk.FramebufferCreateInfo{
+        sType           = .FRAMEBUFFER_CREATE_INFO,
+        renderPass      = r.shadow_pass,
+        attachmentCount = 1,
+        pAttachments    = &r.shadow_view,
+        width           = u32(r.shadow_res),
+        height          = u32(r.shadow_res),
+        layers          = 1,
+    }
+    vk.CreateFramebuffer(r.device, &fbci, nil, &r.shadow_fb)
+}
+
+vk3d_set_sun :: proc(r: ^VK3D_Renderer, sun: R3D_Sun) {
+    r.sun = sun
+    if r.sun.shadow_bias == 0 { r.sun.shadow_bias = 0.0025 }
+    if r.sun.shadow_radius == 0 { r.sun.shadow_radius = 12 }
+}
+
+vk3d_shadow_pass_begin :: proc(r: ^VK3D_Renderer, center: linalg.Vector3f32) {
+    if !r.sun.enabled || !r.sun.cast_shadows { return }
+    r3d_sun_view_proj(&r.sun, center, true)
+    r.sun.shadow_texel = 1.0 / f32(r.shadow_res)
+    clear(&r.shadow_draws)
+}
+
+// Queue a mesh as a shadow caster this frame.
+vk3d_draw_mesh_shadow :: proc(r: ^VK3D_Renderer, mesh: ^VK3D_Mesh, model: linalg.Matrix4f32) {
+    if !r.sun.enabled || !r.sun.cast_shadows || mesh.index_count == 0 { return }
+    append(&r.shadow_draws, VK3D_Shadow_Draw{mesh = mesh^, model = model})
+}
+
+vk3d_shadow_pass_end :: proc(r: ^VK3D_Renderer) {
+    // no-op: the pass is recorded in vk3d_begin_frame from the queued draws
+}
+
+// Record the queued shadow pass (called from vk3d_begin_frame).
+@(private)
+vk3d_record_shadow_pass :: proc(r: ^VK3D_Renderer, frame: ^VK3D_Frame) {
+    if !r.sun.enabled || !r.sun.cast_shadows || len(r.shadow_draws) == 0 { return }
+    cmd := frame.cmd
+
+    clear := vk.ClearValue{depthStencil = {depth = 1.0, stencil = 0}}
+    rpbi := vk.RenderPassBeginInfo{
+        sType           = .RENDER_PASS_BEGIN_INFO,
+        renderPass      = r.shadow_pass,
+        framebuffer     = r.shadow_fb,
+        renderArea      = {offset = {x = 0, y = 0}, extent = {width = u32(r.shadow_res), height = u32(r.shadow_res)}},
+        clearValueCount = 1,
+        pClearValues    = &clear,
+    }
+    vk.CmdBeginRenderPass(cmd, &rpbi, .INLINE)
+    vk3d_set_viewport(cmd, r.shadow_res, r.shadow_res)
+    vk.CmdBindPipeline(cmd, .GRAPHICS, r.shadow_pipeline)
+    vk.CmdBindDescriptorSets(cmd, .GRAPHICS, r.shadow_layout, 0, 1, &frame.ubo_set, 0, nil)
+
+    for d in r.shadow_draws {
+        model := d.model
+        vk.CmdPushConstants(cmd, r.shadow_layout, {.VERTEX}, 0, 64, &model)
+        vbo := d.mesh.vbo
+        offset := vk.DeviceSize(0)
+        vk.CmdBindVertexBuffers(cmd, 0, 1, &vbo, &offset)
+        vk.CmdBindIndexBuffer(cmd, d.mesh.ebo, 0, .UINT32)
+        vk.CmdDrawIndexed(cmd, u32(d.mesh.index_count), 1, 0, 0, 0)
+    }
+    vk.CmdEndRenderPass(cmd)
+}
+
+@(private)
+vk3d_create_shadow_pipeline :: proc(r: ^VK3D_Renderer, vert: vk.ShaderModule) -> bool {
+    stages := [1]vk.PipelineShaderStageCreateInfo{
+        {sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.VERTEX}, module = vert, pName = "main"},
+    }
+    binding := vk.VertexInputBindingDescription{binding = 0, stride = R3D_VERTEX_STRIDE, inputRate = .VERTEX}
+    attrs := [1]vk.VertexInputAttributeDescription{
+        {location = 0, binding = 0, format = .R32G32B32_SFLOAT, offset = u32(offset_of(R3D_Vertex, pos))},
+    }
+    vi := vk.PipelineVertexInputStateCreateInfo{
+        sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        vertexBindingDescriptionCount   = 1,
+        pVertexBindingDescriptions      = &binding,
+        vertexAttributeDescriptionCount = 1,
+        pVertexAttributeDescriptions    = &attrs[0],
+    }
+    ia := vk.PipelineInputAssemblyStateCreateInfo{
+        sType    = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        topology = .TRIANGLE_LIST,
+    }
+    vp := vk.PipelineViewportStateCreateInfo{
+        sType         = .PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        viewportCount = 1,
+        scissorCount  = 1,
+    }
+    rs := vk.PipelineRasterizationStateCreateInfo{
+        sType                   = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        polygonMode             = .FILL,
+        cullMode                = {},
+        frontFace               = .COUNTER_CLOCKWISE,
+        lineWidth               = 1.0,
+        depthBiasEnable         = true,
+        depthBiasConstantFactor = 2.0,
+        depthBiasSlopeFactor    = 2.5,
+    }
+    ms := vk.PipelineMultisampleStateCreateInfo{
+        sType                = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        rasterizationSamples = {._1},
+    }
+    ds := vk.PipelineDepthStencilStateCreateInfo{
+        sType            = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        depthTestEnable  = true,
+        depthWriteEnable = true,
+        depthCompareOp   = .LESS,
+    }
+    cb := vk.PipelineColorBlendStateCreateInfo{
+        sType           = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        attachmentCount = 0,
+    }
+    dyn_states := [2]vk.DynamicState{.VIEWPORT, .SCISSOR}
+    dyn := vk.PipelineDynamicStateCreateInfo{
+        sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        dynamicStateCount = 2,
+        pDynamicStates    = &dyn_states[0],
+    }
+    ci := vk.GraphicsPipelineCreateInfo{
+        sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
+        stageCount          = 1,
+        pStages             = &stages[0],
+        pVertexInputState   = &vi,
+        pInputAssemblyState = &ia,
+        pViewportState      = &vp,
+        pRasterizationState = &rs,
+        pMultisampleState   = &ms,
+        pDepthStencilState  = &ds,
+        pColorBlendState    = &cb,
+        pDynamicState       = &dyn,
+        layout              = r.shadow_layout,
+        renderPass          = r.shadow_pass,
+        subpass             = 0,
+    }
+    if vk.CreateGraphicsPipelines(r.device, 0, 1, &ci, nil, &r.shadow_pipeline) != .SUCCESS {
+        fmt.eprintln("vk3d: shadow pipeline creation failed")
         return false
     }
     return true
