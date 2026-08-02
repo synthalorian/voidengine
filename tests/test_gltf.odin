@@ -37,7 +37,7 @@ pad4 :: proc(buf: ^[dynamic]u8, pad: u8) {
 // Build a one-triangle glb: positions/normals/uvs + u16 indices + pink material.
 @(private)
 build_triangle_glb :: proc() -> []u8 {
-    json := `{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],` +
+    json := `{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"TriNode","mesh":0,"translation":[10,5,-2]}],` +
         `"meshes":[{"name":"Tri","primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":0}]}],` +
         `"materials":[{"pbrMetallicRoughness":{"baseColorFactor":[1.0,0.2,0.8,1.0]}}],` +
         `"accessors":[` +
@@ -112,14 +112,18 @@ gltf_loads_triangle :: proc(t: ^testing.T) {
     if len(model.meshes) == 0 { return }
 
     m := model.meshes[0]
-    testing.expect_value(t, m.name, "Tri")
+    testing.expect_value(t, m.name, "TriNode")
     testing.expect_value(t, len(m.data.vertices), 3)
     testing.expect_value(t, len(m.data.indices), 3)
 
+    // node translation [10,5,-2] must be flattened into vertex positions
+    v0 := m.data.vertices[0]
+    testing.expect(t, abs(v0.pos.x - 10) < 1e-4 && abs(v0.pos.y - 5) < 1e-4 && abs(v0.pos.z + 2) < 1e-4,
+        "v0 translated by node")
     v1 := m.data.vertices[1]
-    testing.expect(t, abs(v1.pos.x - 1) < 1e-6 && abs(v1.pos.y) < 1e-6, "pos1.x == 1")
+    testing.expect(t, abs(v1.pos.x - 11) < 1e-4 && abs(v1.pos.y - 5) < 1e-4, "pos1.x == 11 after node transform")
     v2 := m.data.vertices[2]
-    testing.expect(t, abs(v2.pos.y - 1) < 1e-6, "pos2.y == 1")
+    testing.expect(t, abs(v2.pos.y - 6) < 1e-4, "pos2.y == 6 after node transform")
     testing.expect(t, abs(m.data.vertices[0].normal.z - 1) < 1e-6, "normal (0,0,1)")
     testing.expect(t, abs(v1.uv.x - 1) < 1e-6, "uv1.x == 1")
 

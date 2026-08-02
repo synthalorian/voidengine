@@ -4,9 +4,10 @@ package voidengine
 // gltf.odin — static glTF mesh loading (v1) via vendor:cgltf.
 //
 // Scope: .gltf/.glb, triangle primitives, POSITION/NORMAL/TEXCOORD_0 +
-// indices. Materials reduce to baseColorFactor tints. Node transforms are
-// NOT flattened yet (single-mesh props at identity); scene-graph traversal
-// and texture paths come later. glTF is right-handed Y-up like the engine.
+// indices. Materials reduce to baseColorFactor tints. Node transforms ARE
+// flattened into world space (Blender exports every object as a node with
+// TRS — without this, parts collapse onto the origin). Texture paths and
+// skins/animations come later. glTF is right-handed Y-up like the engine.
 // ============================================================================
 
 import "core:strings"
@@ -39,12 +40,24 @@ r3d_gltf_load :: proc(path: string, allocator := context.allocator) -> (model: R
     }
     if cgltf.validate(data) != .success { return model, false }
 
-    for m in data.meshes {
-        for &p in m.primitives {
-            if p.type != .triangles { continue }
-            gm := gltf_load_primitive(m.name != nil ? string(m.name) : "", &p)
-            if len(gm.data.vertices) == 0 { continue }
-            append(&model.meshes, gm)
+    if data.scene != nil {
+        for n in data.scene.nodes {
+            gltf_walk_node(&model, n, linalg.MATRIX4F32_IDENTITY)
+        }
+    } else if len(data.scenes) > 0 {
+        for n in data.scenes[0].nodes {
+            gltf_walk_node(&model, n, linalg.MATRIX4F32_IDENTITY)
+        }
+    } else {
+        // no scene graph: every mesh at identity
+        for m in data.meshes {
+            for &p in m.primitives {
+                if p.type != .triangles { continue }
+                name := m.name != nil ? string(m.name) : ""
+                gm := gltf_load_primitive(name, &p)
+                if len(gm.data.vertices) == 0 { continue }
+                append(&model.meshes, gm)
+            }
         }
     }
     if len(model.meshes) == 0 { return model, false }
@@ -58,6 +71,43 @@ r3d_gltf_destroy :: proc(model: ^R3D_Gltf_Model) {
     }
     delete(model.meshes)
     model.meshes = nil
+}
+
+@(private)
+gltf_walk_node :: proc(model: ^R3D_Gltf_Model, n: ^cgltf.node, parent: linalg.Matrix4f32) {
+    local16: [16]f32
+    cgltf.node_transform_local(n, raw_data(local16[:]))
+    local := transmute(linalg.Matrix4f32)local16
+    world := parent * local
+
+    if n.mesh != nil {
+        for &p in n.mesh.primitives {
+            if p.type != .triangles { continue }
+            name: string
+            if n.name != nil {
+                name = string(n.name)
+            } else if n.mesh.name != nil {
+                name = string(n.mesh.name)
+            }
+            gm := gltf_load_primitive(name, &p)
+            if len(gm.data.vertices) == 0 { continue }
+            gltf_apply_transform(&gm.data, world)
+            append(&model.meshes, gm)
+        }
+    }
+    for c in n.children {
+        gltf_walk_node(model, c, world)
+    }
+}
+
+@(private)
+gltf_apply_transform :: proc(d: ^R3D_Mesh_Data, m: linalg.Matrix4f32) {
+    for &v in d.vertices {
+        p := m * linalg.Vector4f32{v.pos.x, v.pos.y, v.pos.z, 1}
+        v.pos = p.xyz / p.w
+        n4 := m * linalg.Vector4f32{v.normal.x, v.normal.y, v.normal.z, 0}
+        v.normal = linalg.normalize(n4.xyz)
+    }
 }
 
 @(private)
