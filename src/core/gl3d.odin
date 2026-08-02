@@ -79,6 +79,9 @@ GL3D_Renderer :: struct {
     bloom_strength:     f32,
     bloom_threshold:    f32,
     exposure:           f32,
+    saturation:         f32, // grade: 1 = untouched, 0 = grayscale
+    grain:              f32, // grade: film grain amount (0 = off)
+    frame_num:          f32, // monotonically increasing; drives grain animation
     vignette:           f32,
 
     // sun + shadows
@@ -417,6 +420,9 @@ uniform float u_bloom_enabled;
 uniform float u_bloom_strength;
 uniform float u_exposure;
 uniform float u_vignette;
+uniform float u_saturation;
+uniform float u_grain;
+uniform float u_frame;
 out vec4 frag_color;
 void main() {
     vec3 c = texture(u_scene, v_uv).rgb;
@@ -426,6 +432,10 @@ void main() {
     c = vec3(1.0) - exp(-c * u_exposure);          // filmic-ish tonemap
     vec2 d = v_uv - 0.5;
     c *= 1.0 - u_vignette * dot(d, d);              // vignette
+    float lum = dot(c, vec3(0.299, 0.587, 0.114));  // grade: saturation
+    c = mix(vec3(lum), c, u_saturation);
+    float g = fract(sin(dot(v_uv + fract(u_frame * 0.61803), vec2(12.9898, 78.233))) * 43758.5453);
+    c += (g - 0.5) * u_grain;                       // film grain
     c = pow(max(c, vec3(0.0)), vec3(1.0 / 2.2));    // gamma
     frag_color = vec4(c, 1.0);
 }
@@ -501,6 +511,8 @@ gl3d_init :: proc(width, height: i32) -> ^GL3D_Renderer {
     r.bloom_strength  = 0.7
     r.bloom_threshold = 1.0
     r.exposure        = 1.1
+    r.saturation      = 1.0
+    r.grain           = 0
     r.vignette        = 0.35
 
     ok: bool
@@ -842,6 +854,13 @@ gl3d_set_ambient :: proc(r: ^GL3D_Renderer, ambient: linalg.Vector3f32) {
     r.ambient = ambient
 }
 
+// Set the color grade: saturation (1 = untouched, 0 = grayscale) and film
+// grain amount (0 = off, 0.05 = subtle grit).
+gl3d_set_grade :: proc(r: ^GL3D_Renderer, saturation, grain: f32) {
+    r.saturation = saturation
+    r.grain = grain
+}
+
 // Set the atmosphere (sky gradient + fog + sun halo) packed into the Frame UBO.
 gl3d_set_atmosphere :: proc(r: ^GL3D_Renderer, atmo: R3D_Atmosphere) {
     r.atmosphere = atmo
@@ -890,6 +909,7 @@ gl3d_debug_axes :: proc(r: ^GL3D_Renderer, origin: linalg.Vector3f32, size: f32)
 }
 
 gl3d_begin_frame :: proc(r: ^GL3D_Renderer) {
+    r.frame_num += 1
     gl.BindFramebuffer(gl.FRAMEBUFFER, r.scene_fbo)
     gl.Viewport(0, 0, r.width, r.height)
     gl.Enable(gl.DEPTH_TEST)
@@ -1050,6 +1070,9 @@ gl3d_end_frame :: proc(r: ^GL3D_Renderer) {
     gl.Uniform1f(gl.GetUniformLocation(r.composite_prog, "u_bloom_strength"), r.bloom_strength)
     gl.Uniform1f(gl.GetUniformLocation(r.composite_prog, "u_exposure"), r.exposure)
     gl.Uniform1f(gl.GetUniformLocation(r.composite_prog, "u_vignette"), r.vignette)
+    gl.Uniform1f(gl.GetUniformLocation(r.composite_prog, "u_saturation"), r.saturation)
+    gl.Uniform1f(gl.GetUniformLocation(r.composite_prog, "u_grain"), r.grain)
+    gl.Uniform1f(gl.GetUniformLocation(r.composite_prog, "u_frame"), r.frame_num)
     gl.ActiveTexture(gl.TEXTURE0)
     gl.BindTexture(gl.TEXTURE_2D, r.scene_tex)
     gl.ActiveTexture(gl.TEXTURE1)

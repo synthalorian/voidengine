@@ -230,6 +230,9 @@ VK3D_Renderer :: struct {
     bloom_threshold:  f32,
     exposure:         f32,
     vignette:         f32,
+    saturation:       f32, // grade: 1 = untouched, 0 = grayscale
+    grain:            f32, // grade: film grain amount (0 = off)
+    frame_num:        f32, // monotonically increasing; drives grain animation
 }
 
 // ----------------------------------------------------------------------------
@@ -1218,6 +1221,7 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
     r.bloom_strength  = 0.7
     r.bloom_threshold = 1.0
     r.exposure        = 1.1
+    r.saturation      = 1.0
     r.vignette        = 0.35
 
     // --- instance (extensions come from SDL) ---
@@ -1916,6 +1920,13 @@ vk3d_set_ambient :: proc(r: ^VK3D_Renderer, ambient: linalg.Vector3f32) {
     r.ambient = ambient
 }
 
+// Set the color grade: saturation (1 = untouched, 0 = grayscale) and film
+// grain amount (0 = off, 0.05 = subtle grit).
+vk3d_set_grade :: proc(r: ^VK3D_Renderer, saturation, grain: f32) {
+    r.saturation = saturation
+    r.grain = grain
+}
+
 // Set the atmosphere (sky gradient + fog + sun halo) packed into the Frame UBO.
 vk3d_set_atmosphere :: proc(r: ^VK3D_Renderer, atmo: R3D_Atmosphere) {
     r.atmosphere = atmo
@@ -1961,6 +1972,7 @@ vk3d_set_viewport :: proc(cmd: vk.CommandBuffer, w, h: i32) {
 // Acquire a swapchain image and open the scene render pass.
 // Returns false when the swapchain is out of date — skip the frame.
 vk3d_begin_frame :: proc(r: ^VK3D_Renderer) -> bool {
+    r.frame_num += 1
     frame := &r.frames[r.frame_index]
     vk.WaitForFences(r.device, 1, &frame.in_flight, true, ~u64(0))
 
@@ -2206,7 +2218,7 @@ vk3d_end_frame :: proc(r: ^VK3D_Renderer) {
         vk3d_set_viewport(cmd, r.width, r.height)
         vk.CmdBindPipeline(cmd, .GRAPHICS, r.composite_pipeline)
         comp_push := VK3D_Post_Push{
-            p0 = {0, 0, 0, 0},
+            p0 = {r.saturation, r.grain, r.frame_num, 0},
             p1 = {r.bloom ? 1.0 : 0.0, r.bloom_strength, r.exposure, r.vignette},
         }
         vk.CmdPushConstants(cmd, r.composite_layout, {.FRAGMENT}, 0, size_of(VK3D_Post_Push), &comp_push)
