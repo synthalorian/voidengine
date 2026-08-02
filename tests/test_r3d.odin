@@ -144,3 +144,68 @@ r3d_frame_uniforms_lights_capped :: proc(t: ^testing.T) {
     u := engine.r3d_make_frame_uniforms(&cam, 1, false, {}, lights[:])
     testing.expect(t, u.meta.x == f32(engine.R3D_MAX_LIGHTS), "lights capped at R3D_MAX_LIGHTS")
 }
+
+@test
+r3d_ortho_gl_mapping :: proc(t: ^testing.T) {
+    // Ortho must be a pure affine camera matrix: w stays 1 for every point,
+    // x/y map [l,r]x[b,t] -> [-1,1], z maps [near,far] -> [-1,1] (GL).
+    m := engine.r3d_ortho_gl(-10, 10, -5, 5, 1, 101)
+
+    // w-row must be {0,0,0,1} — regression: translation terms previously
+    // landed in the w-row (m[3,0..2] under Odin's m[row,col] indexing),
+    // which broke shadow-map depth comparisons.
+    for p in ([?]linalg.Vector4f32{{0, 0, -1, 1}, {7, -3, -51, 1}, {-10, 5, -101, 1}}) {
+        r := m * p
+        testing.expect(t, abs(r.w - 1) < 1e-5, "ortho must preserve w=1")
+    }
+
+    center := m * linalg.Vector4f32{0, 0, -51, 1}
+    testing.expect(t, abs(center.x) < 1e-5 && abs(center.y) < 1e-5, "box center maps to NDC origin")
+    testing.expect(t, abs(center.z) < 1e-3, "mid-depth maps near 0")
+
+    near_pt := m * linalg.Vector4f32{0, 0, -1, 1}
+    far_pt  := m * linalg.Vector4f32{0, 0, -101, 1}
+    testing.expect(t, abs(near_pt.z - (-1)) < 1e-4, "near plane -> z=-1")
+    testing.expect(t, abs(far_pt.z - 1) < 1e-4, "far plane -> z=+1")
+
+    // closer-to-camera geometry must get SMALLER depth (shadow correctness)
+    closer := m * linalg.Vector4f32{0, 0, -30, 1}
+    farther := m * linalg.Vector4f32{0, 0, -60, 1}
+    testing.expect(t, closer.z < farther.z, "closer points must map to smaller z")
+}
+
+@test
+r3d_ortho_vk_mapping :: proc(t: ^testing.T) {
+    m := engine.r3d_ortho_vk(-10, 10, -5, 5, 1, 101)
+    for p in ([?]linalg.Vector4f32{{0, 0, -1, 1}, {7, -3, -51, 1}, {-10, 5, -101, 1}}) {
+        r := m * p
+        testing.expect(t, abs(r.w - 1) < 1e-5, "vk ortho must preserve w=1")
+    }
+    near_pt := m * linalg.Vector4f32{0, 0, -1, 1}
+    far_pt  := m * linalg.Vector4f32{0, 0, -101, 1}
+    testing.expect(t, abs(near_pt.z) < 1e-3, "vk near plane -> z=0")
+    testing.expect(t, abs(far_pt.z - 1) < 1e-3, "vk far plane -> z=1")
+    // y flipped vs GL
+    top_pt := m * linalg.Vector4f32{0, 5, -51, 1}
+    testing.expect(t, top_pt.y < -0.99, "vk ortho flips y")
+}
+
+@test
+r3d_sun_view_proj_depth_order :: proc(t: ^testing.T) {
+    // A point closer to the sun must land at smaller shadow depth than one
+    // farther away, at the same lateral position — the invariant shadow
+    // comparison depends on.
+    for vulkan in ([2]bool{false, true}) {
+        sun := engine.R3D_Sun{
+            direction = {-0.4, -0.8, 0.3},
+            shadow_radius = 20,
+        }
+        vp := engine.r3d_sun_view_proj(&sun, {0, 0, 0}, vulkan)
+        low  := vp * linalg.Vector4f32{0, 0, 0, 1}
+        high := vp * linalg.Vector4f32{0, 5, 0, 1} // 5 units closer to the sun
+        low_z  := low.z / low.w
+        high_z := high.z / high.w
+        testing.expect(t, abs(low.w - 1) < 1e-4 && abs(high.w - 1) < 1e-4, "sun ortho preserves w")
+        testing.expect(t, high_z < low_z, "sun-facing points must be at smaller depth")
+    }
+}

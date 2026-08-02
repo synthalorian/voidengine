@@ -1200,6 +1200,14 @@ gl3d_shadow_pass_end :: proc(r: ^GL3D_Renderer) {
     // gl3d_begin_frame rebinds the scene target, viewport, and state
 }
 
+// Debug: read the shadow map depth back (shadow_res^2 floats). Call after
+// gl3d_shadow_pass_end. min==1.0 means no casters were recorded.
+gl3d_read_shadow_map :: proc(r: ^GL3D_Renderer, pixels: []f32) {
+    gl.BindFramebuffer(gl.FRAMEBUFFER, r.shadow_fbo)
+    gl.ReadPixels(0, 0, r.shadow_res, r.shadow_res, gl.DEPTH_COMPONENT, gl.FLOAT, raw_data(pixels))
+    gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
+}
+
 // Init the mesh program (called from gl3d_init).
 @(private)
 gl3d_init_mesh_pipeline :: proc(r: ^GL3D_Renderer) -> bool {

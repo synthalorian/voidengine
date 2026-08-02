@@ -117,13 +117,15 @@ R3D_Sun :: struct {
 }
 
 // Right-handed orthographic projection, OpenGL clip conventions (z in [-1,1]).
+// NOTE: Odin matrix comma-indexing is m[row, column] — translation belongs in
+// column 3, i.e. m[0,3]/m[1,3]/m[2,3] (NOT m[3,0..2], which is the w-row).
 r3d_ortho_gl :: proc "contextless" (left, right, bottom, top, near_z, far_z: f32) -> (m: linalg.Matrix4f32) {
     m[0, 0] = 2 / (right - left)
     m[1, 1] = 2 / (top - bottom)
     m[2, 2] = -2 / (far_z - near_z)
-    m[3, 0] = -(right + left) / (right - left)
-    m[3, 1] = -(top + bottom) / (top - bottom)
-    m[3, 2] = -(far_z + near_z) / (far_z - near_z)
+    m[0, 3] = -(right + left) / (right - left)
+    m[1, 3] = -(top + bottom) / (top - bottom)
+    m[2, 3] = -(far_z + near_z) / (far_z - near_z)
     m[3, 3] = 1
     return
 }
@@ -133,9 +135,9 @@ r3d_ortho_vk :: proc "contextless" (left, right, bottom, top, near_z, far_z: f32
     m[0, 0] = 2 / (right - left)
     m[1, 1] = -2 / (top - bottom)
     m[2, 2] = -1 / (far_z - near_z)
-    m[3, 0] = -(right + left) / (right - left)
-    m[3, 1] = -(top + bottom) / (top - bottom)
-    m[3, 2] = near_z / (far_z - near_z)
+    m[0, 3] = -(right + left) / (right - left)
+    m[1, 3] = -(top + bottom) / (top - bottom)
+    m[2, 3] = -near_z / (far_z - near_z)
     m[3, 3] = 1
     return
 }
