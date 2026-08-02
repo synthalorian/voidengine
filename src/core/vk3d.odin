@@ -1710,7 +1710,7 @@ vk3d_resize :: proc(r: ^VK3D_Renderer, width, height: i32) {
 // ----------------------------------------------------------------------------
 
 // Upload raw RGBA8 pixels as a texture (staging buffer -> device local image).
-@(private)
+// Public: games bake procedural textures at runtime (terrain splats, etc).
 vk3d_upload_pixels :: proc(r: ^VK3D_Renderer, pixels: []u8, w, h: i32, repeat := false) -> VK3D_Texture {
     tex: VK3D_Texture
     img_size := vk.DeviceSize(w * h * 4)
