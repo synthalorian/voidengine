@@ -10,15 +10,19 @@ layout(location=5) in vec4 v_params;
 
 layout(set=0, binding=0, std140) uniform Frame {
     mat4 u_view_proj;
+    mat4 u_light_view_proj;
     vec4 u_camera_pos;
     vec4 u_ambient;
     vec4 u_light_pos[16];
     vec4 u_light_color[16];
     vec4 u_meta;
-    mat4 u_light_view_proj;
     vec4 u_sun_dir;
     vec4 u_sun_color;
     vec4 u_shadow_params;
+    vec4 u_fog_color;
+    vec4 u_fog_params;
+    vec4 u_sky_zenith;
+    vec4 u_sky_horizon;
 };
 
 layout(set=1, binding=0) uniform sampler2D u_diffuse;
@@ -100,5 +104,10 @@ void main() {
     vec3 lit = base.rgb * diffuse_acc;
     lit += spec_acc * spec_strength;
     lit += base.rgb * emissive;
+    // squared-distance fog toward the horizon color
+    float fog_dist = length(u_camera_pos.xyz - v_world);
+    float fog_f = 1.0 - exp(-u_fog_params.x * u_fog_params.x * fog_dist * fog_dist);
+    lit = mix(lit, u_fog_color.rgb, clamp(fog_f, 0.0, 1.0));
+
     frag_color = vec4(lit, base.a);
 }

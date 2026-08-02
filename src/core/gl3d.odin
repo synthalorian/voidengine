@@ -83,6 +83,7 @@ GL3D_Renderer :: struct {
 
     // sun + shadows
     sun:                R3D_Sun,
+    atmosphere:         R3D_Atmosphere,
     shadow_fbo:         u32,
     shadow_tex:         u32,
     shadow_prog:        u32,
@@ -92,6 +93,8 @@ GL3D_Renderer :: struct {
     lines:              [dynamic]R3D_Debug_Vertex,
     line_prog:          u32,
     line_vao:           u32,
+    sky_prog:           u32,
+    sky_vao:            u32,
     line_vbo:           u32,
 }
 
@@ -121,6 +124,10 @@ layout(std140) uniform Frame {
     vec4 u_sun_dir;
     vec4 u_sun_color;
     vec4 u_shadow_params;
+    vec4 u_fog_color;
+    vec4 u_fog_params;
+    vec4 u_sky_zenith;
+    vec4 u_sky_horizon;
 };
 
 out vec2 v_uv;
@@ -166,6 +173,10 @@ layout(std140) uniform Frame {
     vec4 u_sun_dir;
     vec4 u_sun_color;
     vec4 u_shadow_params;
+    vec4 u_fog_color;
+    vec4 u_fog_params;
+    vec4 u_sky_zenith;
+    vec4 u_sky_horizon;
 };
 
 out vec4 frag_color;
@@ -238,6 +249,11 @@ void main() {
     vec3 lit = base.rgb * diffuse_acc;
     lit += spec_acc * spec_strength;
     lit += base.rgb * emissive;
+    // squared-distance fog toward the horizon color
+    float fog_dist = length(u_camera_pos.xyz - v_world);
+    float fog_f = 1.0 - exp(-u_fog_params.x * u_fog_params.x * fog_dist * fog_dist);
+    lit = mix(lit, u_fog_color.rgb, clamp(fog_f, 0.0, 1.0));
+
     frag_color = vec4(lit, base.a);
 }
 `
@@ -270,6 +286,10 @@ layout(std140) uniform Frame {
     vec4 u_sun_dir;
     vec4 u_sun_color;
     vec4 u_shadow_params;
+    vec4 u_fog_color;
+    vec4 u_fog_params;
+    vec4 u_sky_zenith;
+    vec4 u_sky_horizon;
 };
 
 out vec4 v_color;
@@ -285,6 +305,68 @@ in vec4 v_color;
 out vec4 frag_color;
 void main() {
     frag_color = v_color;
+}
+`
+
+// Fullscreen sky: gradient + sun disc + stars, driven entirely by the Frame
+// UBO (sun direction/color + atmosphere). Drawn first each frame with depth
+// off; scene geometry renders over it.
+GL3D_SKY_VERT :: `#version 330 core
+out vec2 v_ndc;
+void main() {
+    vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);
+    v_ndc = p;
+    gl_Position = vec4(p, 0.0, 1.0);
+}
+`
+
+GL3D_SKY_FRAG :: `#version 330 core
+in vec2 v_ndc;
+out vec4 frag_color;
+uniform mat4 u_inv_vp;
+
+layout(std140) uniform Frame {
+    mat4 u_view_proj;
+    mat4 u_light_view_proj;
+    vec4 u_camera_pos;
+    vec4 u_ambient;
+    vec4 u_light_pos[16];
+    vec4 u_light_color[16];
+    vec4 u_meta;
+    vec4 u_sun_dir;
+    vec4 u_sun_color;
+    vec4 u_shadow_params;
+    vec4 u_fog_color;
+    vec4 u_fog_params;
+    vec4 u_sky_zenith;
+    vec4 u_sky_horizon;
+};
+
+void main() {
+    vec4 far_pt = u_inv_vp * vec4(v_ndc, 1.0, 1.0);
+    vec3 dir = normalize(far_pt.xyz / far_pt.w - u_camera_pos.xyz);
+    float elev = dir.y;
+
+    float t = pow(clamp(elev, 0.0, 1.0), 0.55);
+    vec3 sky = mix(u_sky_horizon.rgb, u_sky_zenith.rgb, t);
+    if (elev < 0.0) {
+        sky = mix(u_sky_horizon.rgb, u_fog_color.rgb * 0.4, clamp(-elev * 4.0, 0.0, 1.0));
+    }
+
+    // sun disc + halo
+    vec3 sun_l = -u_sun_dir.xyz;
+    float sd = clamp(dot(dir, sun_l), 0.0, 1.0);
+    sky += u_sun_color.rgb * (pow(sd, 900.0) * 2.5 + pow(sd, 20.0) * 0.20 * u_fog_params.y);
+
+    // stars fade in when the sun is down
+    float night = 1.0 - clamp(dot(u_sun_color.rgb, vec3(0.333)), 0.0, 1.0);
+    if (night > 0.05 && elev > 0.02) {
+        vec3 q = floor(dir * 240.0);
+        float h = fract(sin(dot(q, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+        sky += vec3(step(0.9986, h)) * night * 0.7;
+    }
+
+    frag_color = vec4(sky, 1.0);
 }
 `
 
@@ -407,6 +489,7 @@ gl3d_build_program :: proc(vert_src, frag_src: string) -> (u32, bool) {
 
 gl3d_init :: proc(width, height: i32) -> ^GL3D_Renderer {
     r := new(GL3D_Renderer)
+    r.atmosphere = r3d_default_atmosphere()
     r.width  = width
     r.height = height
     r.instances = make([dynamic]R3D_Instance)
@@ -434,6 +517,8 @@ gl3d_init :: proc(width, height: i32) -> ^GL3D_Renderer {
     if !ok { return nil }
     r.line_prog, ok = gl3d_build_program(GL3D_LINE_VERT, GL3D_LINE_FRAG)
     if !ok { return nil }
+    r.sky_prog, ok = gl3d_build_program(GL3D_SKY_VERT, GL3D_SKY_FRAG)
+    if !ok { return nil }
 
     // UBO: frame uniforms at binding point 0 in both sprite programs
     gl.GenBuffers(1, &r.ubo)
@@ -448,6 +533,11 @@ gl3d_init :: proc(width, height: i32) -> ^GL3D_Renderer {
     if line_block != gl.INVALID_INDEX {
         gl.UniformBlockBinding(r.line_prog, line_block, 0)
     }
+    sky_block := gl.GetUniformBlockIndex(r.sky_prog, "Frame")
+    if sky_block != gl.INVALID_INDEX {
+        gl.UniformBlockBinding(r.sky_prog, sky_block, 0)
+    }
+    gl.GenVertexArrays(1, &r.sky_vao) // dummy VAO for the attribute-less sky draw
 
     // --- debug line geometry (streaming pos+color pairs) ---
     gl.GenVertexArrays(1, &r.line_vao)
@@ -666,6 +756,8 @@ gl3d_shutdown :: proc(r: ^GL3D_Renderer) {
     gl.DeleteTextures(1, &r.shadow_tex)
     gl.DeleteProgram(r.line_prog)
     gl.DeleteVertexArrays(1, &r.line_vao)
+    gl.DeleteProgram(r.sky_prog)
+    gl.DeleteVertexArrays(1, &r.sky_vao)
     gl.DeleteBuffers(1, &r.line_vbo)
     delete(r.lines)
     delete(r.instances)
@@ -750,6 +842,11 @@ gl3d_set_ambient :: proc(r: ^GL3D_Renderer, ambient: linalg.Vector3f32) {
     r.ambient = ambient
 }
 
+// Set the atmosphere (sky gradient + fog + sun halo) packed into the Frame UBO.
+gl3d_set_atmosphere :: proc(r: ^GL3D_Renderer, atmo: R3D_Atmosphere) {
+    r.atmosphere = atmo
+}
+
 gl3d_clear_lights :: proc(r: ^GL3D_Renderer) {
     clear(&r.lights)
 }
@@ -806,6 +903,28 @@ gl3d_begin_frame :: proc(r: ^GL3D_Renderer) {
     clear(&r.instances)
     r.cur_diffuse = 0
     r.cur_normal  = 0
+
+    // sky: fullscreen gradient from the Frame UBO (sun + atmosphere). The UBO
+    // still holds last frame's values — upload fresh ones first so the sky
+    // matches this frame's sun/fog.
+    if r.sky_prog != 0 {
+        aspect := f32(r.width) / f32(r.height)
+        uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:], &r.sun, &r.atmosphere)
+        gl.BindBuffer(gl.UNIFORM_BUFFER, r.ubo)
+        gl.BufferSubData(gl.UNIFORM_BUFFER, 0, size_of(R3D_Frame_Uniforms), &uniforms)
+
+        vp := r3d_camera_view_proj(&r.camera, aspect, false)
+        inv := linalg.inverse(vp)
+        gl.DepthMask(false)
+        gl.Disable(gl.DEPTH_TEST)
+        gl.UseProgram(r.sky_prog)
+        gl.UniformMatrix4fv(gl.GetUniformLocation(r.sky_prog, "u_inv_vp"), 1, false, &inv[0][0])
+        gl.BindVertexArray(r.sky_vao)
+        gl.DrawArrays(gl.TRIANGLES, 0, 3)
+        gl.BindVertexArray(0)
+        gl.Enable(gl.DEPTH_TEST)
+        gl.DepthMask(true)
+    }
 }
 
 // Queue a sprite for rendering. diffuse is required; normal may be 0 (flat).
@@ -839,7 +958,7 @@ gl3d_flush :: proc(r: ^GL3D_Renderer) {
 
     // frame uniforms
     aspect := f32(r.width) / f32(max(r.height, 1))
-    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:], &r.sun)
+    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:], &r.sun, &r.atmosphere)
     gl.BindBuffer(gl.UNIFORM_BUFFER, r.ubo)
     gl.BufferSubData(gl.UNIFORM_BUFFER, 0, size_of(R3D_Frame_Uniforms), &uniforms)
 
@@ -880,7 +999,7 @@ gl3d_end_frame :: proc(r: ^GL3D_Renderer) {
     if len(r.lines) > 0 {
         gl.UseProgram(r.line_prog)
         aspect := f32(r.width) / f32(max(r.height, 1))
-        uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:], &r.sun)
+        uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:], &r.sun, &r.atmosphere)
         gl.BindBuffer(gl.UNIFORM_BUFFER, r.ubo)
         gl.BufferSubData(gl.UNIFORM_BUFFER, 0, size_of(R3D_Frame_Uniforms), &uniforms)
         gl.BindBuffer(gl.ARRAY_BUFFER, r.line_vbo)
@@ -966,6 +1085,10 @@ layout(std140) uniform Frame {
     vec4 u_sun_dir;
     vec4 u_sun_color;
     vec4 u_shadow_params;
+    vec4 u_fog_color;
+    vec4 u_fog_params;
+    vec4 u_sky_zenith;
+    vec4 u_sky_horizon;
 };
 
 uniform mat4 u_model;
@@ -1012,6 +1135,10 @@ layout(std140) uniform Frame {
     vec4 u_sun_dir;
     vec4 u_sun_color;
     vec4 u_shadow_params;
+    vec4 u_fog_color;
+    vec4 u_fog_params;
+    vec4 u_sky_zenith;
+    vec4 u_sky_horizon;
 };
 
 out vec4 frag_color;
@@ -1075,6 +1202,11 @@ void main() {
     vec3 lit = base.rgb * diffuse_acc;
     lit += spec_acc * spec_strength;
     lit += base.rgb * emissive;
+    // squared-distance fog toward the horizon color
+    float fog_dist = length(u_camera_pos.xyz - v_world);
+    float fog_f = 1.0 - exp(-u_fog_params.x * u_fog_params.x * fog_dist * fog_dist);
+    lit = mix(lit, u_fog_color.rgb, clamp(fog_f, 0.0, 1.0));
+
     frag_color = vec4(lit, base.a);
 }
 `
@@ -1128,7 +1260,7 @@ gl3d_draw_mesh_opts :: proc(r: ^GL3D_Renderer, mesh: ^GL3D_Mesh, texture: u32, m
     gl.UseProgram(r.mesh_prog)
 
     aspect := f32(r.width) / f32(max(r.height, 1))
-    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:], &r.sun)
+    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, false, r.ambient, r.lights[:], &r.sun, &r.atmosphere)
     gl.BindBuffer(gl.UNIFORM_BUFFER, r.ubo)
     gl.BufferSubData(gl.UNIFORM_BUFFER, 0, size_of(R3D_Frame_Uniforms), &uniforms)
 

@@ -185,11 +185,14 @@ VK3D_Renderer :: struct {
     sampler_shadow:     vk.Sampler,
     shadow_res:         i32,
     sun:                R3D_Sun,
+    atmosphere:         R3D_Atmosphere,
     shadow_draws:       [dynamic]VK3D_Shadow_Draw,
 
     // debug lines
     line_layout:        vk.PipelineLayout,
     line_pipeline:      vk.Pipeline,
+    sky_layout:         vk.PipelineLayout,
+    sky_pipeline:       vk.Pipeline,
     lines:              [dynamic]R3D_Debug_Vertex,
 
     // static geometry
@@ -1199,6 +1202,7 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
     vk.load_proc_addresses_custom(vk3d_set_proc)
 
     r := new(VK3D_Renderer)
+    r.atmosphere = r3d_default_atmosphere()
     r.window    = window
     r.width     = width
     r.height    = height
@@ -1461,6 +1465,18 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
             fmt.eprintln("vk3d: line pipeline layout failed")
             return nil
         }
+
+        // sky: set 0 frame UBO + inverse view-proj push constant
+        sky_sets := [1]vk.DescriptorSetLayout{r.frame_set_layout}
+        sky_push := vk.PushConstantRange{stageFlags = {.VERTEX, .FRAGMENT}, offset = 0, size = 64}
+        ci.setLayoutCount         = 1
+        ci.pSetLayouts            = &sky_sets[0]
+        ci.pushConstantRangeCount = 1
+        ci.pPushConstantRanges    = &sky_push
+        if vk.CreatePipelineLayout(r.device, &ci, nil, &r.sky_layout) != .SUCCESS {
+            fmt.eprintln("vk3d: sky pipeline layout failed")
+            return nil
+        }
     }
 
     // --- samplers ---
@@ -1584,7 +1600,9 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
         shadow_vert, ok_wv := vk3d_load_shader_module(r, shader_dir, "vk_shadow.vert")
         line_vert,   ok_lv := vk3d_load_shader_module(r, shader_dir, "vk_line.vert")
         line_frag,   ok_lf := vk3d_load_shader_module(r, shader_dir, "vk_line.frag")
-        if !(ok_sv && ok_sf && ok_pv && ok_bf && ok_uf && ok_cf && ok_mv && ok_mf && ok_wv && ok_lv && ok_lf) {
+        sky_vert,    ok_kv := vk3d_load_shader_module(r, shader_dir, "vk_sky.vert")
+        sky_frag,    ok_kf := vk3d_load_shader_module(r, shader_dir, "vk_sky.frag")
+        if !(ok_sv && ok_sf && ok_pv && ok_bf && ok_uf && ok_cf && ok_mv && ok_mf && ok_wv && ok_lv && ok_lf && ok_kv && ok_kf) {
             fmt.eprintln("vk3d: shader load failed (run tools/compile-vk-shaders.sh)")
             return nil
         }
@@ -1600,6 +1618,8 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
             vk.DestroyShaderModule(r.device, shadow_vert, nil)
             vk.DestroyShaderModule(r.device, line_vert, nil)
             vk.DestroyShaderModule(r.device, line_frag, nil)
+            vk.DestroyShaderModule(r.device, sky_vert, nil)
+            vk.DestroyShaderModule(r.device, sky_frag, nil)
         }
 
         if !vk3d_create_sprite_pipeline(r, sprite_vert, sprite_frag) { return nil }
@@ -1613,6 +1633,7 @@ vk3d_init :: proc(window: ^SDL.Window, width, height: i32, shader_dir: string) -
         if !vk3d_create_mesh_pipeline(r, mesh_vert, mesh_frag) { return nil }
         if !vk3d_create_shadow_pipeline(r, shadow_vert) { return nil }
         if !vk3d_create_line_pipeline(r, line_vert, line_frag) { return nil }
+        if !vk3d_create_sky_pipeline(r, sky_vert, sky_frag) { return nil }
     }
 
     return r
@@ -1656,12 +1677,14 @@ vk3d_shutdown :: proc(r: ^VK3D_Renderer) {
     vk.DestroyPipeline(r.device, r.mesh_pipeline, nil)
     vk.DestroyPipeline(r.device, r.shadow_pipeline, nil)
     vk.DestroyPipeline(r.device, r.line_pipeline, nil)
+    vk.DestroyPipeline(r.device, r.sky_pipeline, nil)
     vk.DestroyPipelineLayout(r.device, r.sprite_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.post_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.composite_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.mesh_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.shadow_layout, nil)
     vk.DestroyPipelineLayout(r.device, r.line_layout, nil)
+    vk.DestroyPipelineLayout(r.device, r.sky_layout, nil)
     vk.DestroyRenderPass(r.device, r.shadow_pass, nil)
     vk.DestroyFramebuffer(r.device, r.shadow_fb, nil)
     vk.DestroyImageView(r.device, r.shadow_view, nil)
@@ -1893,6 +1916,11 @@ vk3d_set_ambient :: proc(r: ^VK3D_Renderer, ambient: linalg.Vector3f32) {
     r.ambient = ambient
 }
 
+// Set the atmosphere (sky gradient + fog + sun halo) packed into the Frame UBO.
+vk3d_set_atmosphere :: proc(r: ^VK3D_Renderer, atmo: R3D_Atmosphere) {
+    r.atmosphere = atmo
+}
+
 vk3d_clear_lights :: proc(r: ^VK3D_Renderer) {
     clear(&r.lights)
 }
@@ -1973,8 +2001,22 @@ vk3d_begin_frame :: proc(r: ^VK3D_Renderer) -> bool {
         pClearValues    = &clears[0],
     }
     vk.CmdBeginRenderPass(frame.cmd, &rpbi, .INLINE)
-    vk.CmdBindPipeline(frame.cmd, .GRAPHICS, r.sprite_pipeline)
     vk3d_set_viewport(frame.cmd, r.width, r.height)
+
+    // sky: fullscreen gradient from the Frame UBO, drawn before everything
+    if r.sky_pipeline != 0 {
+        aspect := f32(r.width) / f32(max(r.height, 1))
+        uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:], &r.sun, &r.atmosphere)
+        (^R3D_Frame_Uniforms)(frame.ubo_mapped)^ = uniforms
+        vp := r3d_camera_view_proj(&r.camera, aspect, true)
+        inv := linalg.inverse(vp)
+        vk.CmdBindPipeline(frame.cmd, .GRAPHICS, r.sky_pipeline)
+        vk.CmdBindDescriptorSets(frame.cmd, .GRAPHICS, r.sky_layout, 0, 1, &frame.ubo_set, 0, nil)
+        vk.CmdPushConstants(frame.cmd, r.sky_layout, {.VERTEX, .FRAGMENT}, 0, 64, &inv)
+        vk.CmdDraw(frame.cmd, 3, 1, 0, 0)
+    }
+
+    vk.CmdBindPipeline(frame.cmd, .GRAPHICS, r.sprite_pipeline)
 
     clear(&r.instances)
     r.inst_frame_base = 0
@@ -2026,7 +2068,7 @@ vk3d_flush :: proc(r: ^VK3D_Renderer) {
     // of the frame applies to all batches, so set camera/lights before drawing
     // (same as typical gl3d usage).
     aspect := f32(r.width) / f32(max(r.height, 1))
-    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:], &r.sun)
+    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:], &r.sun, &r.atmosphere)
     (^R3D_Frame_Uniforms)(frame.ubo_mapped)^ = uniforms
 
     // stream instances into the per-frame buffer AFTER previously flushed
@@ -2104,7 +2146,7 @@ vk3d_end_frame :: proc(r: ^VK3D_Renderer) {
     // debug lines: depth-tested, inside the scene pass before it closes
     if len(r.lines) > 0 {
         aspect := f32(r.width) / f32(max(r.height, 1))
-        uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:], &r.sun)
+        uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:], &r.sun, &r.atmosphere)
         (^R3D_Frame_Uniforms)(frame.ubo_mapped)^ = uniforms
 
         vk3d_ensure_line_capacity(r, frame, len(r.lines))
@@ -2285,7 +2327,7 @@ vk3d_draw_mesh_opts :: proc(r: ^VK3D_Renderer, mesh: ^VK3D_Mesh, texture: VK3D_T
 
     // frame uniforms (same values as sprite batches this frame)
     aspect := f32(r.width) / f32(max(r.height, 1))
-    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:], &r.sun)
+    uniforms := r3d_make_frame_uniforms(&r.camera, aspect, true, r.ambient, r.lights[:], &r.sun, &r.atmosphere)
     (^R3D_Frame_Uniforms)(frame.ubo_mapped)^ = uniforms
 
     tex := texture
@@ -2721,6 +2763,80 @@ vk3d_create_line_pipeline :: proc(r: ^VK3D_Renderer, vert, frag: vk.ShaderModule
     }
     if vk.CreateGraphicsPipelines(r.device, 0, 1, &ci, nil, &r.line_pipeline) != .SUCCESS {
         fmt.eprintln("vk3d: line pipeline creation failed")
+        return false
+    }
+    return true
+}
+
+// Sky: attribute-less fullscreen triangle, no depth test/write, no blending.
+// Drawn first in the scene pass; all geometry renders over it.
+@(private)
+vk3d_create_sky_pipeline :: proc(r: ^VK3D_Renderer, vert, frag: vk.ShaderModule) -> bool {
+    stages := [2]vk.PipelineShaderStageCreateInfo{
+        {sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.VERTEX}, module = vert, pName = "main"},
+        {sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.FRAGMENT}, module = frag, pName = "main"},
+    }
+    vi := vk.PipelineVertexInputStateCreateInfo{
+        sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    }
+    ia := vk.PipelineInputAssemblyStateCreateInfo{
+        sType    = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        topology = .TRIANGLE_LIST,
+    }
+    vp := vk.PipelineViewportStateCreateInfo{
+        sType         = .PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        viewportCount = 1,
+        scissorCount  = 1,
+    }
+    rs := vk.PipelineRasterizationStateCreateInfo{
+        sType       = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        polygonMode = .FILL,
+        cullMode    = {},
+        frontFace   = .COUNTER_CLOCKWISE,
+        lineWidth   = 1.0,
+    }
+    ms := vk.PipelineMultisampleStateCreateInfo{
+        sType                = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        rasterizationSamples = {._1},
+    }
+    ds := vk.PipelineDepthStencilStateCreateInfo{
+        sType            = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        depthTestEnable  = false,
+        depthWriteEnable = false,
+    }
+    blend_att := vk.PipelineColorBlendAttachmentState{
+        blendEnable    = false,
+        colorWriteMask = {.R, .G, .B, .A},
+    }
+    cb := vk.PipelineColorBlendStateCreateInfo{
+        sType           = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        attachmentCount = 1,
+        pAttachments    = &blend_att,
+    }
+    dyn_states := [2]vk.DynamicState{.VIEWPORT, .SCISSOR}
+    dyn := vk.PipelineDynamicStateCreateInfo{
+        sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        dynamicStateCount = 2,
+        pDynamicStates    = &dyn_states[0],
+    }
+    ci := vk.GraphicsPipelineCreateInfo{
+        sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
+        stageCount          = 2,
+        pStages             = &stages[0],
+        pVertexInputState   = &vi,
+        pInputAssemblyState = &ia,
+        pViewportState      = &vp,
+        pRasterizationState = &rs,
+        pMultisampleState   = &ms,
+        pDepthStencilState  = &ds,
+        pColorBlendState    = &cb,
+        pDynamicState       = &dyn,
+        layout              = r.sky_layout,
+        renderPass          = r.scene_pass,
+        subpass             = 0,
+    }
+    if vk.CreateGraphicsPipelines(r.device, 0, 1, &ci, nil, &r.sky_pipeline) != .SUCCESS {
+        fmt.eprintln("vk3d: sky pipeline creation failed")
         return false
     }
     return true

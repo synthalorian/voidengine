@@ -90,7 +90,7 @@ R3D_DEBUG_VERTEX_STRIDE :: size_of(R3D_Debug_Vertex) // 28
 R3D_Frame_Uniforms :: struct {
     // NOTE: both Matrix4f32 members FIRST — Odin aligns matrices to 32 bytes,
     // std140 aligns mat4 to 16. Keeping matrices at offsets 0 and 64 makes the
-    // Odin struct layout identical to the GLSL std140 block (736 bytes).
+    // Odin struct layout identical to the GLSL std140 block (800 bytes).
     view_proj:       linalg.Matrix4f32,
     light_view_proj: linalg.Matrix4f32,
     camera_pos:      linalg.Vector4f32, // xyz = position
@@ -101,6 +101,10 @@ R3D_Frame_Uniforms :: struct {
     sun_dir:         linalg.Vector4f32, // xyz = direction light travels
     sun_color:       linalg.Vector4f32, // rgb = HDR intensity
     shadow_params:   linalg.Vector4f32, // x = shadows on, y = bias, z = texel, w = 1 if NDC z needs remap (GL)
+    fog_color:       linalg.Vector4f32, // rgb = distance fog color
+    fog_params:      linalg.Vector4f32, // x = density (squared-distance), y = sun halo scale
+    sky_zenith:      linalg.Vector4f32, // rgb = sky color overhead
+    sky_horizon:     linalg.Vector4f32, // rgb = sky color at the horizon
 }
 
 // Directional light (the "sun") with optional shadow casting.
@@ -114,6 +118,28 @@ R3D_Sun :: struct {
     // computed each frame via r3d_sun_view_proj:
     light_view_proj: linalg.Matrix4f32,
     shadow_texel:    f32, // 1 / shadow map resolution
+}
+
+// Atmosphere: sky gradient + distance fog + sun halo, shared by both
+// backends. The sky program and the lit shaders read these from the Frame UBO.
+R3D_Atmosphere :: struct {
+    sky_zenith:  linalg.Vector4f32, // rgb at the top of the sky
+    sky_horizon: linalg.Vector4f32, // rgb at the horizon
+    fog_color:   linalg.Vector4f32, // rgb distance fog (usually ~horizon)
+    fog_density: f32,               // squared-distance density (0 = off)
+    sun_halo:    f32,               // halo glow scale around the sun disc
+    _:           [3]f32,
+}
+
+// Void-purple defaults: dusky indigo sky, faint violet fog.
+r3d_default_atmosphere :: proc "contextless" () -> R3D_Atmosphere {
+    return R3D_Atmosphere{
+        sky_zenith  = {0.03, 0.02, 0.10, 1},
+        sky_horizon = {0.35, 0.12, 0.38, 1},
+        fog_color   = {0.20, 0.08, 0.26, 1},
+        fog_density = 0.008,
+        sun_halo    = 1.0,
+    }
 }
 
 // Right-handed orthographic projection, OpenGL clip conventions (z in [-1,1]).
@@ -264,6 +290,7 @@ r3d_make_frame_uniforms :: proc "contextless" (
     ambient:   linalg.Vector3f32,
     lights:    []R3D_Light,
     sun:       ^R3D_Sun = nil,
+    atmo:      ^R3D_Atmosphere = nil,
 ) -> (u: R3D_Frame_Uniforms) {
     u.view_proj  = r3d_camera_view_proj(cam, aspect, vulkan)
     u.camera_pos = {cam.position.x, cam.position.y, cam.position.z, 0}
@@ -282,6 +309,12 @@ r3d_make_frame_uniforms :: proc "contextless" (
         z_remap: f32 = vulkan ? 0 : 1
         on: f32 = sun.cast_shadows ? 1 : 0
         u.shadow_params = {on, sun.shadow_bias, sun.shadow_texel, z_remap}
+    }
+    if atmo != nil {
+        u.fog_color   = atmo.fog_color
+        u.fog_params  = {atmo.fog_density, atmo.sun_halo, 0, 0}
+        u.sky_zenith  = atmo.sky_zenith
+        u.sky_horizon = atmo.sky_horizon
     }
     return
 }

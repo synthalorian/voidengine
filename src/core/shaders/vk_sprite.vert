@@ -23,6 +23,10 @@ layout(set=0, binding=0, std140) uniform Frame {
     vec4 u_sun_dir;
     vec4 u_sun_color;
     vec4 u_shadow_params;
+    vec4 u_fog_color;
+    vec4 u_fog_params;
+    vec4 u_sky_zenith;
+    vec4 u_sky_horizon;
 };
 
 layout(location=0) out vec2 v_uv;
