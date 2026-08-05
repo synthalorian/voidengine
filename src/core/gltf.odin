@@ -73,6 +73,117 @@ r3d_gltf_destroy :: proc(model: ^R3D_Gltf_Model) {
     model.meshes = nil
 }
 
+// ----------------------------------------------------------------------------
+// animations (v2): per-node rotation/translation keyframe channels.
+// Rigid-part (node) animation — the parts stay solid, the joints rotate.
+// ----------------------------------------------------------------------------
+
+R3D_Gltf_Anim_Channel :: struct {
+    node_name:   string,
+    is_rotation: bool,    // true = quaternion keys, false = vec3 translation keys
+    times:       []f32,
+    values:      []f32,   // 4 floats/key (rotation) or 3/key (translation)
+}
+
+R3D_Gltf_Anim :: struct {
+    name:     string,
+    duration: f32,
+    channels: [dynamic]R3D_Gltf_Anim_Channel,
+}
+
+// Load all animation clips from a glTF file. Independent of r3d_gltf_load so
+// animation-only files work. Caller frees with r3d_gltf_anims_destroy.
+r3d_gltf_load_anims :: proc(path: string, allocator := context.allocator) -> (anims: []R3D_Gltf_Anim, ok: bool) {
+    context.allocator = allocator
+
+    opts: cgltf.options
+    data, res := cgltf.parse_file(opts, strings.clone_to_cstring(path, context.temp_allocator))
+    if res != .success { return nil, false }
+    defer cgltf.free(data)
+    if cgltf.load_buffers(opts, data, strings.clone_to_cstring(path, context.temp_allocator)) != .success {
+        return nil, false
+    }
+    if len(data.animations) == 0 { return nil, false }
+
+    out := make([dynamic]R3D_Gltf_Anim)
+    for &a in data.animations {
+        anim := R3D_Gltf_Anim{
+            name = a.name != nil ? strings.clone(string(a.name)) : "anim",
+            channels = make([dynamic]R3D_Gltf_Anim_Channel),
+        }
+        for &ch in a.channels {
+            if ch.target_node == nil || ch.sampler == nil { continue }
+            if ch.target_path != .rotation && ch.target_path != .translation { continue }
+            is_rot := ch.target_path == .rotation
+            nkey := int(ch.sampler.input.count)
+            stride := is_rot ? 4 : 3
+            if int(ch.sampler.output.count) < nkey * (is_rot ? 1 : 1) { continue }
+
+            c := R3D_Gltf_Anim_Channel{
+                node_name   = ch.target_node.name != nil ? strings.clone(string(ch.target_node.name)) : "",
+                is_rotation = is_rot,
+                times       = make([]f32, nkey),
+                values      = make([]f32, nkey * stride),
+            }
+            if cgltf.accessor_unpack_floats(ch.sampler.input, raw_data(c.times), uint(nkey)) == 0 {
+                delete(c.times); delete(c.values); delete(c.node_name)
+                continue
+            }
+            if cgltf.accessor_unpack_floats(ch.sampler.output, raw_data(c.values), uint(nkey * stride)) == 0 {
+                delete(c.times); delete(c.values); delete(c.node_name)
+                continue
+            }
+            if nkey > 0 && c.times[nkey - 1] > anim.duration {
+                anim.duration = c.times[nkey - 1]
+            }
+            append(&anim.channels, c)
+        }
+        append(&out, anim)
+    }
+    if len(out) == 0 { delete(out); return nil, false }
+    return out[:], true
+}
+
+r3d_gltf_anims_destroy :: proc(anims: []R3D_Gltf_Anim) {
+    for &a in anims {
+        for &c in a.channels {
+            delete(c.node_name)
+            delete(c.times)
+            delete(c.values)
+        }
+        delete(a.channels)
+        delete(a.name)
+    }
+    delete(anims)
+}
+
+// Sample a channel at time t (seconds, clamped to the clip). Linear interp;
+// rotations are nlerp'd quaternions (rigid parts — no slerp needed at 24+fps keys).
+r3d_gltf_channel_sample :: proc(c: ^R3D_Gltf_Anim_Channel, t: f32) -> (v: [4]f32) {
+    n := len(c.times)
+    if n == 0 { return {0, 0, 0, 1} }
+    stride := c.is_rotation ? 4 : 3
+    tt := clamp(t, c.times[0], c.times[n - 1])
+    // find the keyframe window
+    i := 0
+    for i < n - 2 && c.times[i + 1] < tt { i += 1 }
+    t0, t1 := c.times[i], c.times[i + 1]
+    span := max(t1 - t0, 1e-6)
+    f := clamp((tt - t0) / span, 0, 1)
+    for k in 0 ..< stride {
+        a := c.values[i * stride + k]
+        b := c.values[(i + 1) * stride + k]
+        v[k] = a + (b - a) * f
+    }
+    if c.is_rotation {
+        // nlerp: normalize the blend
+        q := linalg.Vector4f32{v[0], v[1], v[2], v[3]}
+        q = linalg.normalize(q)
+        v = {q.x, q.y, q.z, q.w}
+    }
+    return v
+}
+
 @(private)
 gltf_walk_node :: proc(model: ^R3D_Gltf_Model, n: ^cgltf.node, parent: linalg.Matrix4f32) {
     local16: [16]f32
