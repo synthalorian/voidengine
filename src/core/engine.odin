@@ -961,6 +961,43 @@ audio_stop_music :: proc(audio: ^AudioEngine) {
     }
 }
 
+// fade the current music out over ms, then silence. Schedules only — the
+// channel keeps sounding until the fade completes (poll audio_music_playing).
+audio_fade_out_music :: proc(audio: ^AudioEngine, ms: i32) {
+    if !audio.initialized do return
+    MIX.FadeOutMusic(ms)
+    audio.current_music = nil
+}
+
+// start a track with a fade-in over fade_ms. SDL_mixer has ONE music channel,
+// so a "crossfade" is fade-out-then-fade-in: pair with audio_fade_out_music
+// and start this when the old track goes silent.
+audio_play_music_fade :: proc(audio: ^AudioEngine, name: string, loops: i32 = -1, fade_ms: i32 = 0) {
+    if !audio.initialized do return
+    if music, ok := audio.music[name]; ok {
+        if fade_ms > 0 {
+            MIX.FadeInMusic(music, loops, fade_ms)
+        } else {
+            MIX.PlayMusic(music, loops)
+        }
+        audio.current_music = music
+    }
+}
+
+// is anything still sounding on the music channel (fades count until done)
+audio_music_playing :: proc(audio: ^AudioEngine) -> bool {
+    return audio.initialized && MIX.PlayingMusic() != 0
+}
+
+// track length in seconds — harness verification of generated libraries
+audio_music_duration :: proc(audio: ^AudioEngine, name: string) -> f64 {
+    if !audio.initialized do return 0
+    if music, ok := audio.music[name]; ok {
+        return MIX.MusicDuration(music)
+    }
+    return 0
+}
+
 // play a chunk looping forever on a dedicated channel (music layers, ambience)
 audio_play_loop :: proc(audio: ^AudioEngine, name: string, channel: i32) {
     if !audio.initialized do return
