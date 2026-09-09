@@ -2,7 +2,7 @@
 name = "voidengine-studio"
 version = "0.3.0"
 description = "VoidEngine Studio — build and test games"
-authors = ["synthalorian"]
+authors = ["synth"]
 license = "MIT"
 repository = "https://github.com/synthalorian/voidengine"
 edition = "2021"
