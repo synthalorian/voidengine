@@ -280,7 +280,7 @@ MIT
 
 ---
 
-*Built on the neon grid. The tape never stops rolling.* 🎹🦞
+*Built on the neon grid. The tape never stops rolling.* ⚫🦞
 
 ---
 

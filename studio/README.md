@@ -49,4 +49,4 @@ Click **+ Add Project** and select the folder containing your VoidEngine `Makefi
 
 ---
 
-*Part of the VoidEngine project.* 🎹🦞🌆
+*Part of the VoidEngine project.* ⚫🦞🌆
